@@ -9,7 +9,7 @@ jobs:
     name: RemSoundKit unit tests (macOS)
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run tests
         run: swift test --package-path RemSoundKit
 
@@ -17,7 +17,7 @@ jobs:
     name: Build macOS app
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build (unsigned)
         run: |
           xcodebuild build \
@@ -30,7 +30,7 @@ jobs:
       - name: Zip app
         run: ditto -c -k --keepParent build/Build/Products/Release/RemSound.app RemSound-macOS-unsigned.zip
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: RemSound-macOS-unsigned
           path: RemSound-macOS-unsigned.zip
@@ -39,7 +39,7 @@ jobs:
     name: Build iOS app
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build (unsigned, device SDK)
         run: |
           xcodebuild build \
@@ -55,7 +55,7 @@ jobs:
           cp -R build/Build/Products/Release-iphoneos/RemSound.app Payload/
           zip -qry RemSound-iOS-unsigned.ipa Payload
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: RemSound-iOS-unsigned
           path: RemSound-iOS-unsigned.ipa

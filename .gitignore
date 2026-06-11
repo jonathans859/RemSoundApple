@@ -12,3 +12,7 @@ Package.resolved
 
 # macOS
 .DS_Store
+
+# Downloaded CI logs dropped into the repo for debugging
+logs_*/
+

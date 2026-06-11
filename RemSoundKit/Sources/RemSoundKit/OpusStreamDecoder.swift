@@ -32,7 +32,9 @@ final class OpusStreamDecoder {
         }
         let decoded = packet.withUnsafeBufferPointer { data in
             output.withUnsafeMutableBufferPointer { pcm in
-                opus_decode(decoder, data.baseAddress, opus_int32(packet.count), pcm.baseAddress, Int32(frameSize), fec ? 1 : 0)
+                // pcm.baseAddress is non-nil: output was sized to `needed` (>= 120 * channels)
+                // above. opus_decode's output parameter is imported non-optional.
+                opus_decode(decoder, data.baseAddress, opus_int32(packet.count), pcm.baseAddress!, Int32(frameSize), fec ? 1 : 0)
             }
         }
         return decoded > 0 ? Int(decoded) : nil
