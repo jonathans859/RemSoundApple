@@ -89,6 +89,8 @@ public final class ReceiverController {
     private var lastBytesReceived: Int64 = 0
     private var lastBytesSent: Int64 = 0
     private var lastRateDate = Date()
+    private var lastRxRateKBs = 0.0
+    private var lastTxRateKBs = 0.0
 
     public init() {
         manualPeers = settings.manualPeers
@@ -110,7 +112,14 @@ public final class ReceiverController {
             engine.sendFromAudioSocket(data, to: endpoint)
         }
         discovery.onPeersChanged = { [weak self] in
-            Task { @MainActor [weak self] in self?.refreshNow() }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // A peer appearing (or changing address) must re-feed the allow-list and
+                // heartbeat tracking, or a previously-selected peer discovered after start()
+                // shows as selected while all its audio packets are rejected.
+                self.applyPeerSelection()
+                self.refreshNow()
+            }
         }
         engine.onSessionsChanged = { [weak self] in
             Task { @MainActor [weak self] in self?.refreshNow() }
@@ -281,40 +290,54 @@ public final class ReceiverController {
         var lines: [String] = []
 
         // Connected = selected peers whose heartbeat is currently healthy, like Windows.
+        // The line set must stay structurally stable from tick to tick — every tracked peer
+        // always gets a line, and the rate/buffer lines are always present — otherwise the
+        // Form rows below shift every second and become impossible to tap.
         let health = heartbeat.allPeerHealth()
-        let healthy = health.filter { $0.state == .healthy }
-        if healthy.isEmpty {
+            .sorted { name(for: $0.audioEndpoint.address) < name(for: $1.audioEndpoint.address) }
+        let healthyCount = health.filter { $0.state == .healthy }.count
+        if healthyCount == 0 {
             lines.append("Not connected to any peer")
         } else {
-            lines.append("Connected to \(healthy.count) peer\(healthy.count == 1 ? "" : "s")")
-            for peerHealth in healthy {
-                let peerName = name(for: peerHealth.audioEndpoint.address)
-                let ping = peerHealth.rttMs.map { "ping \($0) ms" } ?? "ping pending"
-                lines.append("\(peerName): \(ping)")
+            lines.append("Connected to \(healthyCount) peer\(healthyCount == 1 ? "" : "s")")
+        }
+        for peerHealth in health {
+            let peerName = name(for: peerHealth.audioEndpoint.address)
+            let status: String
+            switch peerHealth.state {
+            case .healthy: status = peerHealth.rttMs.map { "ping \($0) ms" } ?? "ping pending"
+            case .stale: status = "connection unstable"
+            case .unreachable: status = "not responding"
+            case .unknown: status = "waiting for a reply"
             }
+            lines.append("\(peerName): \(status)")
         }
 
         lines.append("Uptime: \(Self.formatDuration(engine.uptime))")
 
-        // Per-second rates from the counter deltas since the previous tick.
+        // Per-second rates from the counter deltas since the previous tick. Bursty refreshes
+        // (peer/session change callbacks) can land < 0.2 s apart — keep showing the last
+        // computed rate then instead of dropping the line or resetting the baseline.
         let now = Date()
         let dt = now.timeIntervalSince(lastRateDate)
         let received = engine.bytesReceived
         let sent = engine.bytesSent
         if dt > 0.2 {
-            let rxRate = Double(received - lastBytesReceived) / 1000.0 / dt
-            let txRate = Double(sent - lastBytesSent) / 1000.0 / dt
-            lines.append(String(format: "Receiving %.1f kB/s; sending %.1f kB/s", max(0, rxRate), max(0, txRate)))
+            lastRxRateKBs = max(0, Double(received - lastBytesReceived) / 1000.0 / dt)
+            lastTxRateKBs = max(0, Double(sent - lastBytesSent) / 1000.0 / dt)
+            lastBytesReceived = received
+            lastBytesSent = sent
+            lastRateDate = now
         }
-        lastBytesReceived = received
-        lastBytesSent = sent
-        lastRateDate = now
+        lines.append(String(format: "Receiving %.1f kB/s; sending %.1f kB/s", lastRxRateKBs, lastTxRateKBs))
         lines.append(String(format: "Total received %.1f MB; sent %.1f MB",
                             Double(received) / 1_000_000, Double(sent) / 1_000_000))
 
         if mixer.activeSessionCount > 0 {
             lines.append(String(format: "Audio buffer %d ms; output latency %.0f ms",
                                 mixer.currentBufferMs, output.reportedOutputLatencyMs))
+        } else {
+            lines.append("No audio playing")
         }
 
         connectionDetails = lines
