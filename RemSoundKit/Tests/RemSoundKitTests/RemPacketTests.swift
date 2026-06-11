@@ -119,11 +119,12 @@ final class RemPacketTests: XCTestCase {
     func testDiscoveryMessageUsesWindowsJsonKeys() throws {
         let message = DiscoveryMessage(
             InstanceId: UUID(), Name: "Test", AudioPort: 47830, CanSend: false, CanReceive: true)
-        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(message)) as? [String: Any]
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(message)) as? [String: Any])
         // System.Text.Json on the Windows side matches case-sensitively; these exact keys
         // are the wire contract.
-        XCTAssertEqual(Set(json?.keys ?? []), ["InstanceId", "Name", "AudioPort", "CanSend", "CanReceive"])
-        XCTAssertEqual(json?["AudioPort"] as? Int, 47830)
-        XCTAssertEqual(json?["CanReceive"] as? Bool, true)
+        XCTAssertEqual(Set(json.keys), ["InstanceId", "Name", "AudioPort", "CanSend", "CanReceive"])
+        XCTAssertEqual(json["AudioPort"] as? Int, 47830)
+        XCTAssertEqual(json["CanReceive"] as? Bool, true)
     }
 }
