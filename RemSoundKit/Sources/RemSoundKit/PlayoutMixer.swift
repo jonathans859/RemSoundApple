@@ -53,15 +53,44 @@ public final class PlayoutMixer {
     func removeSession(endpoint: UDPEndpoint, streamId: UInt16) {
         lock.lock()
         defer { lock.unlock() }
-        sessions.removeValue(forKey: SessionKey(endpoint: endpoint, streamId: streamId))
+        if let removed = sessions.removeValue(forKey: SessionKey(endpoint: endpoint, streamId: streamId)) {
+            retireCounters(of: removed)
+        }
         snapshot = Array(sessions.values)
     }
 
     func removeAllSessions() {
         lock.lock()
         defer { lock.unlock() }
+        for session in sessions.values { retireCounters(of: session) }
         sessions.removeAll()
         snapshot = []
+    }
+
+    // Glitch counters of removed sessions are folded into these so the cumulative totals
+    // the status UI diffs against never run backwards when a stream ends or is superseded.
+    private var retiredUnderruns: Int64 = 0
+    private var retiredTrimFires: Int64 = 0
+
+    private func retireCounters(of session: SessionPlayout) {
+        let counters = session.glitchCounters
+        retiredUnderruns += counters.underruns
+        retiredTrimFires += counters.trims
+    }
+
+    /// Cumulative underrun / click-trim counts across all sessions, past and present.
+    public var glitchTotals: (underruns: Int64, trims: Int64) {
+        lock.lock()
+        let all = snapshot
+        var underruns = retiredUnderruns
+        var trims = retiredTrimFires
+        lock.unlock()
+        for session in all {
+            let counters = session.glitchCounters
+            underruns += counters.underruns
+            trims += counters.trims
+        }
+        return (underruns, trims)
     }
 
     public var activeSessionCount: Int {

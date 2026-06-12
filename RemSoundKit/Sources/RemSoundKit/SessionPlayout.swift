@@ -64,6 +64,13 @@ final class SessionPlayout {
         return count * 1000 / Self.mixSampleRate
     }
 
+    /// Snapshot of the glitch counters under the buffer lock (1 Hz status UI).
+    var glitchCounters: (underruns: Int64, trims: Int64) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (underruns, trimFireCount)
+    }
+
     func setTargetLatencyMs(_ ms: Int, drainOnLower: Bool = true) {
         lock.lock()
         defer { lock.unlock() }

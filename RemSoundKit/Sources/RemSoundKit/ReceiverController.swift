@@ -128,6 +128,9 @@ public final class ReceiverController {
     private var lastRxRateKBs = 0.0
     private var lastTxRateKBs = 0.0
 
+    // Sliding window of cumulative glitch totals for the "last minute" connection line.
+    private var glitchSamples: [(time: Date, underruns: Int64, trims: Int64)] = []
+
     public init() {
         manualPeers = settings.manualPeers
         selectedAddresses = settings.selectedPeerAddresses
@@ -179,6 +182,7 @@ public final class ReceiverController {
     public func start() {
         guard !isRunning else { return }
         lastError = nil
+        glitchSamples = []
         applyPassword()
         do {
             try engine.start(port: settings.listenPort)
@@ -502,6 +506,23 @@ public final class ReceiverController {
                                 mixer.currentBufferMs, output.reportedOutputLatencyMs))
         } else {
             lines.append("No audio playing")
+        }
+
+        // Glitch visibility: dropouts = the buffer ran dry mid-playback (network jitter
+        // exceeded the buffered cushion); trims = the buffer overfilled past the jitter
+        // margin and old audio was cut to bound latency. Reported over a sliding minute
+        // so "is it glitching right now" is answerable from the panel, with VoiceOver.
+        let totals = mixer.glitchTotals
+        glitchSamples.append((time: now, underruns: totals.underruns, trims: totals.trims))
+        glitchSamples.removeAll { now.timeIntervalSince($0.time) > 60 }
+        if mixer.activeSessionCount > 0, let oldest = glitchSamples.first {
+            let dropouts = totals.underruns - oldest.underruns
+            let trims = totals.trims - oldest.trims
+            if dropouts == 0 && trims == 0 {
+                lines.append("No audio dropouts in the last minute")
+            } else {
+                lines.append("Last minute: \(dropouts) audio dropout\(dropouts == 1 ? "" : "s"), \(trims) buffer trim\(trims == 1 ? "" : "s")")
+            }
         }
 
         connectionDetails = lines
