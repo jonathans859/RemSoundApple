@@ -41,7 +41,9 @@ public final class ReceiverController {
     /// Windows-style connection details ("Connected to 1 peer", per-peer ping, uptime,
     /// rates, totals, buffer/output latency), refreshed once a second.
     public private(set) var connectionDetails: [String] = []
-    /// Inputs the user can pick for microphone sending, refreshed on the 1 Hz tick.
+    /// Inputs the user can pick for microphone sending. Refreshed when the hardware set
+    /// changes (route change / device list notifications), at start, and on send start —
+    /// never on a timer; enumeration IPC alongside live playback causes audible glitches.
     public private(set) var availableMicrophones: [AudioInputDevice] = []
     /// Plain-sentence state of the send path ("Sending microphone audio to 1 peer").
     public private(set) var sendStatus = ""
@@ -173,6 +175,12 @@ public final class ReceiverController {
         microphone.onSamples = { [sendEngine] samples, frames in
             sendEngine.submit(samples, frameCount: frames)
         }
+        // Refresh the picker's input list only when the hardware set actually changes —
+        // NOT on the 1 Hz tick. Polling AVAudioSession / the Core Audio HAL every second
+        // does audio-server IPC alongside live playback and audibly glitched it.
+        microphone.onInputsChanged = { [weak self] in
+            Task { @MainActor [weak self] in self?.refreshMicrophoneList() }
+        }
         selectedMicrophoneId = settings.selectedMicrophoneId
         microphone.setPreferredInput(id: selectedMicrophoneId)
     }
@@ -183,6 +191,7 @@ public final class ReceiverController {
         guard !isRunning else { return }
         lastError = nil
         glitchSamples = []
+        refreshMicrophoneList()
         applyPassword()
         do {
             try engine.start(port: settings.listenPort)
@@ -382,6 +391,9 @@ public final class ReceiverController {
 #if os(iOS)
         output.setRecordingMode(true)
 #endif
+        // The record-capable session can expose inputs that .playback hid; re-list now
+        // (the route-change notification usually also fires, but don't depend on it).
+        refreshMicrophoneList()
         microphone.setPreferredInput(id: selectedMicrophoneId)
         sendEngine.start()
         updateSendTargets()
@@ -431,10 +443,12 @@ public final class ReceiverController {
         sendEngine.setTargets(targets)
     }
 
-    private func updateSendStatus() {
+    private func refreshMicrophoneList() {
         let inputs = microphone.availableInputs()
         if inputs != availableMicrophones { availableMicrophones = inputs }
+    }
 
+    private func updateSendStatus() {
         guard sendEnabled else {
             sendStatus = ""
             return

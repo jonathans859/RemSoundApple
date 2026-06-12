@@ -30,6 +30,11 @@ public final class MicrophoneCapture {
     /// 48 kHz interleaved stereo float; second parameter is the sample-frame count.
     public var onSamples: ((UnsafePointer<Float>, Int) -> Void)?
     public var onDiagnostic: ((String) -> Void)?
+    /// Fires on the main queue when the set of selectable inputs may have changed (device
+    /// plug/unplug, route change). Enumerating inputs goes through the audio server, so
+    /// callers must refresh on this signal instead of polling `availableInputs()` on a
+    /// timer — per-second hardware polling runs IPC alongside live playback.
+    public var onInputsChanged: (() -> Void)?
 
     public private(set) var isRunning = false
 
@@ -42,11 +47,52 @@ public final class MicrophoneCapture {
     private var stereoScratch = [Float](repeating: 0, count: MicrophoneCapture.maxConvertedFrames * 2)
     private var preferredInputId: String?
     private var configChangeObserver: NSObjectProtocol?
+    private var inputsChangedObserver: NSObjectProtocol?
+#if os(macOS)
+    private var devicesListenerBlock: AudioObjectPropertyListenerBlock?
+    private static let devicesListAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+#endif
 
     private static let wireSampleRate = 48_000.0
     private static let maxConvertedFrames = 9600 // 200 ms at 48 kHz — far above any tap buffer
 
-    public init() {}
+    public init() {
+#if os(iOS)
+        // Inputs appear/disappear only with a route change (plug/unplug, Bluetooth,
+        // category switch), so that notification is the complete refresh signal.
+        inputsChangedObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.onInputsChanged?()
+        }
+#else
+        // The HAL's device-list property covers attach/detach of every input device,
+        // including virtual ones (Loopback/BlackHole) being created.
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.onInputsChanged?()
+        }
+        devicesListenerBlock = listener
+        var address = Self.devicesListAddress
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, listener)
+#endif
+    }
+
+    deinit {
+        if let inputsChangedObserver {
+            NotificationCenter.default.removeObserver(inputsChangedObserver)
+        }
+#if os(macOS)
+        if let devicesListenerBlock {
+            var address = Self.devicesListAddress
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, devicesListenerBlock)
+        }
+#endif
+    }
 
     // MARK: - Permission
 

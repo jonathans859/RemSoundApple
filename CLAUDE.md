@@ -137,7 +137,11 @@ These are the wire contract. Breaking any of them silently breaks interop:
 5. iOS restricts UDP **broadcast** (multicast entitlement, needs Apple approval). Do not
    "fix" discovery by relying on broadcast — the unicast auto-learn path is the supported
    mechanism on iOS; manual peer entry seeds it.
-6. **Multi-homed peers (LAN + Tailscale) announce from several source IPs.** The Windows
+6. **Never poll audio-input hardware on a timer.** The first send UI refreshed
+   `availableInputs()` on the 1 Hz tick; AVAudioSession / Core Audio HAL enumeration is
+   audio-server IPC and produced steady once-a-second crackling in live playback. Inputs
+   are refreshed only on route-change / device-list notifications (`onInputsChanged`).
+7. **Multi-homed peers (LAN + Tailscale) announce from several source IPs.** The Windows
    one-address-per-InstanceId model makes the stored peer flap between paths every
    announcement — never key UI row identity, the allow-list, or heartbeat tracking on a
    single address. `PeerAnnouncement.addresses` keeps all live paths (primary = first
