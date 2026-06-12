@@ -19,6 +19,7 @@ public struct ReceiverRootView: View {
             peersSection
             addPeerSection
             audioSection
+            sendSection
             securitySection
         }
         .formStyle(.grouped)
@@ -160,6 +161,37 @@ public struct ReceiverRootView: View {
                 .accessibilityHint("Plays a sound when a peer's audio starts or stops")
         } header: {
             Text("Playback")
+        }
+    }
+
+    private var sendSection: some View {
+        Section {
+            Toggle("Send microphone", isOn: $controller.sendEnabled)
+                .accessibilityHint("Streams this device's microphone, encrypted, to the peers you have selected above")
+
+            Picker("Microphone", selection: $controller.selectedMicrophoneId) {
+                Text("System default").tag(String?.none)
+                ForEach(controller.availableMicrophones) { mic in
+                    Text(mic.name).tag(String?.some(mic.id))
+                }
+                // Keep a previously chosen input selectable while it's unplugged so the
+                // picker doesn't silently jump selections.
+                if let selected = controller.selectedMicrophoneId,
+                   !controller.availableMicrophones.contains(where: { $0.id == selected }) {
+                    Text("Previously selected input").tag(String?.some(selected))
+                }
+            }
+            .accessibilityHint("Which microphone or input to send from")
+
+            if !controller.sendStatus.isEmpty {
+                Text(controller.sendStatus)
+                    .font(.callout)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+        } header: {
+            Text("Send")
+        } footer: {
+            Text("Audio goes to the peers you have ticked above; they must also allow this device in their RemSound app. Using Bluetooth headphones' microphone lowers their playback quality while sending.")
         }
     }
 

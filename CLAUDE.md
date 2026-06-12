@@ -1,6 +1,6 @@
 # CLAUDE.md — RemSoundApple
 
-Receive-only iOS/macOS companion app for the Windows **RemSound** app
+iOS/macOS companion app (receive + microphone send) for the Windows **RemSound** app
 (https://github.com/Ednunp/RemSound). Reference clone of the Windows source:
 `C:\Users\jonathan\gitkeep\Ednunp\RemSound` — protocol truth lives in
 `src/RemSound.Core/RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDiscoveryService.cs`,
@@ -46,9 +46,17 @@ These are the wire contract. Breaking any of them silently breaks interop:
   new streamId, supersede old sessions from the same peer **only if the lane matches**
   (BothIndependent senders run two concurrent lanes per peer).
 
-## Locked product decisions (user-confirmed 2026-06-10)
+## Locked product decisions (user-confirmed 2026-06-10; sending added 2026-06-12)
 
-- v3.x protocol only; no legacy, no relay-v2 lobby, no sending/recording.
+- v3.x protocol only; no legacy, no relay-v2 lobby, no recording.
+- **Microphone sending** (added 2026-06-12): Opus-only (no PCM send path), single mixed
+  lane, 48 kHz stereo, 192 kbps — mirrors the Windows Opus sender settings exactly
+  (RESTRICTED_LOWDELAY, complexity 10, VBR, inband FEC, 10 % loss bias). Sends to the
+  *selected* peers (one endpoint per peer — best heartbeat path; never two paths of the
+  same machine, that would double its sessions). Outbound audio leaves the receiver's
+  audio socket (shared NAT pinhole). The send toggle is deliberately NOT persisted — the
+  mic never goes hot at launch. macOS captures *input devices only*; output/loopback
+  capture is delegated to virtual devices (Loopback/BlackHole) appearing as inputs.
 - iOS 18 / macOS 15 minimum; app name "RemSound"; bundle ids
   `com.jonathan859.remsound.ios` / `.mac`.
 - Single config (no Windows-style profiles). Password in Keychain.
@@ -67,7 +75,8 @@ These are the wire contract. Breaking any of them silently breaks interop:
 
 - `RemSoundKit/Sources/RemSoundKit/` — everything shared:
   - `RemPacket.swift`, `AudioFormatInfo.swift` — wire codec.
-  - `RemSoundCrypto.swift` — PBKDF2/AES-GCM + `AudioDecryptor` (network-thread only).
+  - `RemSoundCrypto.swift` — PBKDF2/AES-GCM + `AudioDecryptor` (network-thread only) +
+    `AudioEncryptor` (capture-thread only; emits the wire's nonce‖tag‖ct layout).
   - `UDPSocket.swift` — BSD-socket wrapper, one blocking-recv thread (.userInteractive),
     IPv4 only (matches Windows); also interface enumeration for broadcast addresses.
   - `PeerDiscoveryService.swift`, `HeartbeatService.swift` — see contract above.
@@ -84,6 +93,17 @@ These are the wire contract. Breaking any of them silently breaks interop:
     (interruption / media-services reset / route change), reports output latency.
   - `ReceiverController.swift` — @MainActor @Observable façade; 1 Hz refresh tick drives
     peer rows, cues, and the `connectionDetails` status lines.
+  - `AudioSendEngine.swift` — outbound stream (one Windows `SenderLane`, Opus-only):
+    accumulate 10 ms frames → encode → encrypt → emit to targets; format re-announce
+    every 250 ms; random streamId per start; no key or no targets ⇒ sends nothing.
+  - `OpusStreamEncoder.swift` — libopus encoder via `RemOpusShim` (separate C target in
+    the package: `opus_encoder_ctl` is C-variadic, Swift can't call it; the shim exposes
+    fixed-signature wrappers and depends on swift-opus's `Copus` product).
+  - `MicrophoneCapture.swift` — input capture + enumeration/selection. iOS: AVAudioSession
+    ports + built-in-mic data sources; macOS: Core Audio input devices set on the input
+    unit. Converts hardware format → 48 kHz interleaved stereo float (mono duplicated
+    into both channels — the converter's default 1→2 mapping is not trusted). Rebuilds
+    itself on `AVAudioEngineConfigurationChange`.
   - `Settings.swift` — UserDefaults + Keychain. `ReceiverRootView.swift` — shared SwiftUI.
 - `Apps/iOS`, `Apps/macOS` — thin entry points. iOS has `audio` background mode (lock-screen
   playback). macOS is a `MenuBarExtra` (LSUIElement); the **label view's `.task`** is the
@@ -127,3 +147,7 @@ These are the wire contract. Breaking any of them silently breaks interop:
 - `LinearResampler` (linear interpolation) for non-48 kHz PCM senders; Windows uses WDL.
 - Control packets ignored; no per-route latency (single output, lanes are mixed).
 - No recording, no profiles, no auto-update.
+- Send path: no PCM send, no multi-source mixing, no macOS output-device (loopback)
+  capture — virtual input devices (Loopback/BlackHole) cover that. iOS holds
+  `.playAndRecord` only while sending (Bluetooth output drops to the bidirectional link's
+  quality while the AirPods mic is in use — expected, not a bug).

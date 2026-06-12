@@ -43,7 +43,7 @@ public final class AudioOutput {
 
 #if os(iOS)
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .default)
+        applySessionCategory()
         // 48 kHz to match the wire mix rate; ~5 ms IO buffer for low output latency. Both
         // are preferences — the OS may give us less aggressive values on some routes.
         try? session.setPreferredSampleRate(48_000)
@@ -113,6 +113,35 @@ public final class AudioOutput {
     }
 
 #if os(iOS)
+    /// Whether the session is configured for simultaneous record + playback. Set BEFORE
+    /// microphone capture starts. `.playAndRecord` is only held while sending — it routes
+    /// Bluetooth output through the lower-fidelity bidirectional link, so plain `.playback`
+    /// is restored the moment the mic stops.
+    private var recordingMode = false
+
+    public func setRecordingMode(_ active: Bool) {
+        guard recordingMode != active else { return }
+        recordingMode = active
+        guard isRunning else { return } // start() applies the right category itself
+        applySessionCategory()
+        // The category change re-routes audio, which can stop a running engine.
+        if let engine, !engine.isRunning { try? engine.start() }
+    }
+
+    private func applySessionCategory() {
+        let session = AVAudioSession.sharedInstance()
+        if recordingMode {
+            // .defaultToSpeaker: playAndRecord otherwise routes to the earpiece.
+            // .allowBluetooth (HFP) is what makes AirPods microphones usable;
+            // .allowBluetoothA2DP keeps full-quality output when only receiving on them.
+            try? session.setCategory(
+                .playAndRecord, mode: .default,
+                options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
+        } else {
+            try? session.setCategory(.playback, mode: .default)
+        }
+    }
+
     private func installSessionObservers() {
         removeSessionObservers()
         let center = NotificationCenter.default

@@ -41,6 +41,33 @@ public final class ReceiverController {
     /// Windows-style connection details ("Connected to 1 peer", per-peer ping, uptime,
     /// rates, totals, buffer/output latency), refreshed once a second.
     public private(set) var connectionDetails: [String] = []
+    /// Inputs the user can pick for microphone sending, refreshed on the 1 Hz tick.
+    public private(set) var availableMicrophones: [AudioInputDevice] = []
+    /// Plain-sentence state of the send path ("Sending microphone audio to 1 peer").
+    public private(set) var sendStatus = ""
+
+    /// Microphone sending on/off. Deliberately NOT persisted — the microphone never goes
+    /// hot just because the app launched; the user flips it each session.
+    public var sendEnabled = false {
+        didSet {
+            guard sendEnabled != oldValue else { return }
+            if sendEnabled { startSending() } else { stopSending() }
+        }
+    }
+
+    /// Which input to send from; nil = system default. Persisted.
+    public var selectedMicrophoneId: String? {
+        didSet {
+            guard selectedMicrophoneId != oldValue else { return }
+            settings.selectedMicrophoneId = selectedMicrophoneId
+            microphone.setPreferredInput(id: selectedMicrophoneId)
+            // Live switch: rebuild the capture graph on the new input.
+            if microphone.isRunning {
+                microphone.stop()
+                try? microphone.start()
+            }
+        }
+    }
 
     public var volume: Float {
         didSet {
@@ -81,6 +108,9 @@ public final class ReceiverController {
     private let discovery = PeerDiscoveryService()
     private let heartbeat = HeartbeatService()
     private let cues = CuePlayer()
+    private let sendEngine = AudioSendEngine()
+    private let microphone = MicrophoneCapture()
+    private var sendTargetCount = 0
     private var mixer: PlayoutMixer { engine.mixer }
 
     private var manualPeers: [ManualPeer]
@@ -130,6 +160,18 @@ public final class ReceiverController {
         engine.onSessionsChanged = { [weak self] in
             Task { @MainActor [weak self] in self?.refreshNow() }
         }
+
+        // Send path: outbound audio leaves the SAME socket inbound audio arrives on (the
+        // shared NAT pinhole), and the capture tap feeds the send engine directly on the
+        // capture thread.
+        sendEngine.transport = { [engine] data, endpoint in
+            engine.sendFromAudioSocket(data, to: endpoint)
+        }
+        microphone.onSamples = { [sendEngine] samples, frames in
+            sendEngine.submit(samples, frameCount: frames)
+        }
+        selectedMicrophoneId = settings.selectedMicrophoneId
+        microphone.setPreferredInput(id: selectedMicrophoneId)
     }
 
     // MARK: - Lifecycle
@@ -163,6 +205,7 @@ public final class ReceiverController {
     }
 
     public func stop() {
+        if sendEnabled { sendEnabled = false } // didSet stops capture + send engine
         refreshTask?.cancel()
         refreshTask = nil
         discovery.stop()
@@ -186,10 +229,14 @@ public final class ReceiverController {
 
     private func applyPassword() {
         if password.isEmpty { return }
-        // PBKDF2 at 100k iterations takes ~50-100 ms — off the main actor.
+        // PBKDF2 at 100k iterations takes ~50-100 ms — off the main actor. Derived once,
+        // shared by the receive and send engines.
         let pw = password
-        Task.detached(priority: .userInitiated) { [engine] in
-            engine.setPassword(pw)
+        Task.detached(priority: .userInitiated) { [engine, sendEngine] in
+            let key = RemSoundCrypto.deriveKey(password: pw)
+            let fingerprint = RemSoundCrypto.fingerprint(password: pw)
+            engine.setKeyMaterial(key: key, fingerprint: fingerprint)
+            sendEngine.setKeyMaterial(key: key, fingerprint: fingerprint)
         }
     }
 
@@ -300,8 +347,101 @@ public final class ReceiverController {
         }
         updateCues()
         refreshPeerList()
+        updateSendTargets()
+        updateSendStatus()
         updateSummary()
         updateConnectionDetails()
+    }
+
+    // MARK: - Microphone sending
+
+    private func startSending() {
+        if !isRunning { start() } // the send path shares the receiver's socket
+        guard isRunning else {
+            sendEnabled = false
+            return
+        }
+        MicrophoneCapture.requestPermission { [weak self] granted in
+            Task { @MainActor [weak self] in
+                guard let self, self.sendEnabled else { return } // toggled off while prompted
+                guard granted else {
+                    self.sendEnabled = false
+                    self.lastError = "Microphone access is not allowed. Enable it in system settings to send audio."
+                    return
+                }
+                self.beginCapture()
+            }
+        }
+    }
+
+    private func beginCapture() {
+#if os(iOS)
+        output.setRecordingMode(true)
+#endif
+        microphone.setPreferredInput(id: selectedMicrophoneId)
+        sendEngine.start()
+        updateSendTargets()
+        do {
+            try microphone.start()
+            announce("Microphone sending started")
+        } catch {
+            sendEngine.stop()
+#if os(iOS)
+            output.setRecordingMode(false)
+#endif
+            sendEnabled = false
+            lastError = "Could not start the microphone: \(error.localizedDescription)"
+        }
+        refreshNow()
+    }
+
+    private func stopSending() {
+        let wasCapturing = microphone.isRunning
+        microphone.stop()
+        sendEngine.stop()
+#if os(iOS)
+        output.setRecordingMode(false)
+#endif
+        if wasCapturing { announce("Microphone sending stopped") }
+        refreshNow()
+    }
+
+    /// One destination per selected peer — its healthiest heartbeat path, falling back to
+    /// the primary address. Never more than one of a peer's addresses: sending the same
+    /// stream down two paths would open two doubled-up sessions on its receiver.
+    private func updateSendTargets() {
+        guard sendEngine.isRunning else {
+            sendTargetCount = 0
+            return
+        }
+        let health = heartbeat.allPeerHealth()
+        var targets: [UDPEndpoint] = []
+        for entry in peers where entry.isSelected && !entry.audioEndpoints.isEmpty {
+            if let best = bestHealth(for: entry.addresses, in: health), best.state == .healthy {
+                targets.append(best.audioEndpoint)
+            } else if let primary = entry.audioEndpoint {
+                targets.append(primary)
+            }
+        }
+        sendTargetCount = targets.count
+        sendEngine.setTargets(targets)
+    }
+
+    private func updateSendStatus() {
+        let inputs = microphone.availableInputs()
+        if inputs != availableMicrophones { availableMicrophones = inputs }
+
+        guard sendEnabled else {
+            sendStatus = ""
+            return
+        }
+        if password.isEmpty {
+            sendStatus = "Set a password below to send — audio is always encrypted"
+        } else if sendTargetCount == 0 {
+            sendStatus = "No peers selected — tick a peer above to send to it"
+        } else {
+            sendStatus = "Sending microphone audio to \(sendTargetCount) peer\(sendTargetCount == 1 ? "" : "s")"
+        }
     }
 
     private func updateConnectionDetails() {

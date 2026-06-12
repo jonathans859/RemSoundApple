@@ -161,7 +161,7 @@ public final class PeerDiscoveryService {
         guard let socket else { return }
         let message = DiscoveryMessage(
             InstanceId: instanceId, Name: displayName, AudioPort: Int(audioPort),
-            CanSend: false, CanReceive: true)
+            CanSend: true, CanReceive: true)
         guard let json = try? JSONEncoder().encode(message) else { return }
 
         for target in NetworkInterfaces.broadcastAddresses(port: Self.defaultDiscoveryPort) {

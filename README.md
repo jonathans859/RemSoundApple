@@ -4,9 +4,9 @@ A native receiver for [RemSound](https://github.com/Ednunp/RemSound) — listen 
 RemSound sender (Windows) is transmitting, on an iPhone, iPad, or Mac. Built VoiceOver-first,
 with low-latency playback and the same end-to-end encryption as the Windows app.
 
-This is a **receive-only** companion in the spirit of the community Android receiver: it
-speaks the RemSound v3.x wire protocol (header version 1) and current formats only. Sending,
-recording, and legacy/v2.x compatibility are out of scope.
+It speaks the RemSound v3.x wire protocol (header version 1) and current formats only.
+Besides receiving, it can **send a microphone or input device** back to your RemSound peers
+(Opus, encrypted). Recording and legacy/v2.x compatibility are out of scope.
 
 ## Features
 
@@ -28,6 +28,13 @@ recording, and legacy/v2.x compatibility are out of scope.
   announcements when a peer's audio starts or stops.
 * **Latency control** — jitter buffer with target-latency arming, click-trim, and faded
   underrun concealment. Default 80 ms like Windows; adjustable 5–500 ms.
+* **Microphone sending** — stream a mic (iPhone: bottom mic, AirPods, wired headsets;
+  Mac: any input device, including virtual devices like Loopback for system audio) to the
+  peers you've selected, encrypted with the same shared password. Opus 48 kHz stereo at
+  192 kbps, the same encoder settings as the Windows sender. The toggle resets to off on
+  every launch — the microphone is never live just because the app started. Note: while
+  sending from Bluetooth headphones' own mic, their playback quality drops to the
+  bidirectional link — that's a Bluetooth limitation, not an app bug.
 
 ## Repository layout
 

@@ -64,6 +64,12 @@ public final class AudioReceiverEngine {
     public func setPassword(_ password: String) {
         let key = RemSoundCrypto.deriveKey(password: password)
         let fingerprint = RemSoundCrypto.fingerprint(password: password)
+        setKeyMaterial(key: key, fingerprint: fingerprint)
+    }
+
+    /// Push pre-derived key material — lets the app run PBKDF2 once and share the result
+    /// with the send engine instead of paying the ~100 ms derivation twice.
+    public func setKeyMaterial(key: [UInt8]?, fingerprint: [UInt8]?) {
         lock.lock()
         audioKey = key
         audioFingerprint = fingerprint

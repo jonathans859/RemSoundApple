@@ -114,6 +114,27 @@ public enum RemPacket {
         return (format, fingerprint)
     }
 
+    /// Writes a Format payload, mirroring the Windows `RemPacket.WriteFormatPayload`:
+    /// eight little-endian int32 fields, the Lane byte + 3 reserved-zero bytes, and (when a
+    /// fingerprint is supplied) the 8-byte password fingerprint — 36 or 44 bytes total.
+    public static func writeFormatPayload(_ format: AudioFormatInfo, passwordFingerprint: [UInt8]?) -> Data {
+        var data = Data(capacity: formatPayloadWithFingerprintSize)
+        data.appendLE(UInt32(bitPattern: Int32(format.sampleRate)))
+        data.appendLE(UInt32(bitPattern: Int32(format.channels)))
+        data.appendLE(UInt32(bitPattern: Int32(format.bitsPerSample)))
+        data.appendLE(UInt32(bitPattern: Int32(format.encoding)))
+        data.appendLE(UInt32(bitPattern: Int32(format.blockAlign)))
+        data.appendLE(UInt32(bitPattern: Int32(format.averageBytesPerSecond)))
+        data.appendLE(UInt32(bitPattern: Int32(format.codec.rawValue)))
+        data.appendLE(UInt32(bitPattern: Int32(format.frameSamplesPerChannel)))
+        data.append(format.lane.rawValue)
+        data.append(contentsOf: [0, 0, 0]) // reserved
+        if let passwordFingerprint, passwordFingerprint.count == passwordFingerprintSize {
+            data.append(contentsOf: passwordFingerprint)
+        }
+        return data
+    }
+
     // MARK: - Heartbeat payload
 
     public static func writeHeartbeatPayload(kind: HeartbeatKind, originatorTickMs: Int64) -> Data {

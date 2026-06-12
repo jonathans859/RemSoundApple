@@ -67,6 +67,16 @@ public final class ReceiverSettings {
         set { defaults.set(newValue, forKey: "cuesEnabled") }
     }
 
+    /// Stable id of the input the user picked for microphone sending (see
+    /// `MicrophoneCapture.availableInputs`). Nil/empty = system default input.
+    public var selectedMicrophoneId: String? {
+        get {
+            let value = defaults.string(forKey: "selectedMicrophoneId")
+            return (value?.isEmpty ?? true) ? nil : value
+        }
+        set { defaults.set(newValue ?? "", forKey: "selectedMicrophoneId") }
+    }
+
     public var listenPort: UInt16 {
         get {
             let value = defaults.integer(forKey: "listenPort")

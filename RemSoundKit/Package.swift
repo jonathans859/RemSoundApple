@@ -17,10 +17,20 @@ let package = Package(
         .package(url: "https://github.com/alta/swift-opus.git", exact: "0.0.2"),
     ],
     targets: [
+        // Non-variadic C wrappers over opus_encoder_ctl for the send path — Swift cannot
+        // call C-variadic functions, so encoder configuration (bitrate, FEC, …) goes
+        // through these fixed-signature shims.
+        .target(
+            name: "RemOpusShim",
+            dependencies: [
+                .product(name: "Copus", package: "swift-opus"),
+            ]
+        ),
         .target(
             name: "RemSoundKit",
             dependencies: [
                 .product(name: "Opus", package: "swift-opus"),
+                "RemOpusShim",
             ]
         ),
         .testTarget(

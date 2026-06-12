@@ -24,6 +24,8 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>RemSound finds RemSound senders on your network and receives their audio over the local network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>RemSound streams your microphone, encrypted, to the computers you select — only while “Send microphone” is on.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

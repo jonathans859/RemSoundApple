@@ -74,6 +74,42 @@ public enum RemSoundCrypto {
     }
 }
 
+/// Encrypts outgoing audio payloads — the send-side mirror of `AudioDecryptor`, matching the
+/// Windows `SenderLane` cipher. Packet layout is the wire contract's
+/// `nonce(12) || tag(16) || ciphertext`; CryptoKit's `combined` representation is
+/// nonce || ciphertext || tag, so the pieces are emitted explicitly. Used exclusively on the
+/// capture/encode thread.
+public final class AudioEncryptor {
+    private var key: SymmetricKey?
+    private var keyBytesCached: [UInt8]?
+
+    public init() {}
+
+    public var hasKey: Bool { key != nil }
+
+    /// Rebuild the cipher key if the raw key bytes changed. Cheap comparison on the
+    /// common no-change path.
+    public func ensureKey(_ keyBytes: [UInt8]?) {
+        if keyBytesCached == keyBytes { return }
+        keyBytesCached = keyBytes
+        key = keyBytes.map { SymmetricKey(data: $0) }
+    }
+
+    /// Encrypt a plaintext into the `nonce(12) || tag(16) || ciphertext` wire layout.
+    /// Nil when no key is set (no password — mandatory encryption means nothing is sent)
+    /// or on a CryptoKit failure.
+    public func tryEncrypt(_ plaintext: ArraySlice<UInt8>) -> [UInt8]? {
+        guard let key else { return nil }
+        guard let box = try? AES.GCM.seal(Data(plaintext), using: key) else { return nil }
+        var packet = [UInt8]()
+        packet.reserveCapacity(plaintext.count + RemSoundCrypto.encryptionOverheadBytes)
+        packet.append(contentsOf: box.nonce)
+        packet.append(contentsOf: box.tag)
+        packet.append(contentsOf: box.ciphertext)
+        return packet
+    }
+}
+
 /// Decrypts incoming audio payloads with the key derived from the configured password.
 /// Mirrors the Windows `AudioDecryptor`: one instance shared by all stream sessions, used
 /// exclusively on the network receive thread. Returns nil on auth failure (wrong password /
