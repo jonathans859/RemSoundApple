@@ -37,7 +37,9 @@ public final class MicrophoneCapture {
     private var converter: AVAudioConverter?
     private var convertedBuffer: AVAudioPCMBuffer?
     /// Mono→stereo duplication scratch (mono mics must reach both wire channels).
-    private var stereoScratch = [Float](repeating: 0, count: Self.maxConvertedFrames * 2)
+    /// (`MicrophoneCapture.` spelled out: `Self` is not allowed in a class's stored
+    /// property initializer.)
+    private var stereoScratch = [Float](repeating: 0, count: MicrophoneCapture.maxConvertedFrames * 2)
     private var preferredInputId: String?
     private var configChangeObserver: NSObjectProtocol?
 
