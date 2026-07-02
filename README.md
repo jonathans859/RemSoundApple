@@ -1,5 +1,9 @@
 # RemSound for iOS and macOS
 
+> **AI disclaimer:** This project has been written using Claude (Fable 5 and Opus 4.8).
+> Any usage is at your own risk and nothing can be guaranteed. Pull requests and issues
+> are welcome.
+
 A native receiver for [RemSound](https://github.com/Ednunp/RemSound) — listen to the audio a
 RemSound sender (Windows) is transmitting, on an iPhone, iPad, or Mac. Built VoiceOver-first,
 with low-latency playback and the same end-to-end encryption as the Windows app.
