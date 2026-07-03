@@ -23,23 +23,16 @@ the Actions logs.
 
 2. **Find your Team ID**: developer.apple.com → Membership details → 10-character Team ID.
 
-3. **Decide the bundle ID, then register the App ID**. The iOS bundle ID does NOT have to
-   carry a `.ios` suffix — `com.jonathan859.remsound` works fine and is the recommendation:
-   - Bundle IDs only need to be unique **per app record**, and iOS and macOS are separate
-     records by default, so iOS `com.jonathan859.remsound` + macOS
-     `com.jonathan859.remsound.mac` coexist without any conflict.
-   - Bonus: if the macOS app ever goes to the Mac App Store and you want it to be the
-     *same product* (one app record, "universal purchase"), Apple requires both platforms
-     to share ONE bundle ID — so the suffix-free name on iOS keeps that door open (the
-     macOS ID would then be renamed to match, cheap while it ships as an unsigned zip).
-   - If you confirm the rename, Claude updates `PRODUCT_BUNDLE_IDENTIFIER` in the pbxproj
-     and the locked-decision note in CLAUDE.md; register the App ID only after that
-     decision so the portal matches the project.
+3. **Register the App ID** (bundle ID decided 2026-07-03: the iOS app is
+   **`com.jonathan859.remsound`** — no `.ios` suffix; already renamed in the project.
+   macOS stays `com.jonathan859.remsound.mac`; iOS/macOS are separate app records so
+   there is no conflict, and the suffix-free iOS name keeps Mac App Store "universal
+   purchase" possible later, which would require one shared ID).
 
-   Then: developer.apple.com → Certificates, Identifiers & Profiles → Identifiers → “+” →
-   App IDs → App → **explicit** bundle ID (the one you chose), description "RemSound".
-   No extra capabilities needed (background audio is an Info.plist mode, not a
-   capability; we deliberately do NOT request multicast).
+   developer.apple.com → Certificates, Identifiers & Profiles → Identifiers → “+” →
+   App IDs → App → **explicit** bundle ID `com.jonathan859.remsound`, description
+   "RemSound". No extra capabilities needed (background audio is an Info.plist mode, not
+   a capability; we deliberately do NOT request multicast).
 
 4. **Create an Apple Distribution certificate** (Windows-friendly, no Mac needed):
    - In Git Bash: generate a private key + certificate signing request:
@@ -102,10 +95,11 @@ Repo → Settings → Secrets and variables → Actions → New repository secre
 
 ## Phase 3 — repo gaps to close before the first upload (Claude, needs your input)
 
-1. **App icon (BLOCKER)**: App Store Connect rejects uploads without an asset-catalog
-   AppIcon including the 1024×1024 marketing icon. The repo has none. Provide a
-   1024×1024 PNG (no alpha) and Claude wires up `Apps/iOS/Assets.xcassets` (single-size
-   icon), the pbxproj resources phase, and `ASSETCATALOG_COMPILER_APPICON_NAME`.
+1. **App icon — DONE (2026-07-03)**: `Apps/iOS/Assets.xcassets` now carries a single-size
+   1024×1024 AppIcon (white pixel-style "RS" on blue, 24-bit PNG without alpha — App
+   Store Connect rejects alpha in the marketing icon), wired into the pbxproj resources
+   phase with `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`. To rebrand later, just
+   replace `AppIcon.appiconset/AppIcon.png` with another 1024×1024 no-alpha PNG.
 
 2. **Export compliance** (verified against Apple's docs 2026-07-03): the plist shortcut
    `ITSAppUsesNonExemptEncryption = false` is documented for apps whose only encryption

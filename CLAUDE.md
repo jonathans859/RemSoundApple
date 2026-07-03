@@ -59,7 +59,8 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   selected peer (two paths of one machine would double its sessions). Outbound audio uses
   the receiver's socket. The send toggle is deliberately NOT persisted — the mic never goes
   hot at launch.
-- iOS 18 / macOS 15 minimum; bundle ids `com.jonathan859.remsound.ios` / `.mac`.
+- iOS 18 / macOS 15 minimum; bundle ids `com.jonathan859.remsound` (iOS; renamed from
+  `.ios` 2026-07-03, pre-ship) / `com.jonathan859.remsound.mac` (macOS).
 - Password in Keychain. Control packets (type 5) parsed and ignored.
 - Opus via SPM `alta/swift-opus` pinned `exact: "0.0.2"` (raw C API needed for the FEC flag).
 - **Screen-reader accessibility is the top priority**: every control labeled, status lines
