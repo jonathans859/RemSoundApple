@@ -104,7 +104,10 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   (accumulate → Opus encode → encrypt → targets; format re-announce every 250 ms) via
   `OpusStreamEncoder.swift` (`RemOpusShim` C target wraps variadic `opus_encoder_ctl`).
 - App layer: `ReceiverController.swift` (@MainActor façade, 1 Hz refresh tick),
-  `ReceiverRootView.swift` (shared SwiftUI), `Settings.swift` (UserDefaults + Keychain).
+  `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a two-tab
+  `TabView`: **Connectivity** = status/peers/add-peer/send/password, **Audio** = playback
+  options; a persistent top-right About button opens `AboutView.swift`, which links to this
+  repo and the official Windows repo), `Settings.swift` (UserDefaults + Keychain).
 - `Apps/iOS`, `Apps/macOS`: thin entry points. iOS has the `audio` background mode; macOS
   is a `MenuBarExtra` (LSUIElement) whose **label view's `.task`** is the launch hook.
 

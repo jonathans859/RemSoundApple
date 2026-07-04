@@ -7,23 +7,62 @@ public struct ReceiverRootView: View {
     @Bindable private var controller: ReceiverController
     @State private var newPeerHost = ""
     @FocusState private var addPeerFocused: Bool
+    @State private var showingAbout = false
 
     public init(controller: ReceiverController) {
         self.controller = controller
     }
 
     public var body: some View {
+        // NavigationStack owns the title and the persistent About button (top-right on both
+        // platforms); the TabView splits the controls into a Connectivity tab (peers, links,
+        // sending, password) and an Audio tab (receiving playback options). There is no push
+        // navigation, so nesting the TabView inside the stack keeps one toolbar across tabs.
+        NavigationStack {
+            TabView {
+                connectivityTab
+                    .tabItem { Label("Connectivity", systemImage: "network") }
+                audioTab
+                    .tabItem { Label("Audio", systemImage: "speaker.wave.2.fill") }
+            }
+            .navigationTitle("RemSound")
+#if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+#endif
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showingAbout = true
+                    } label: {
+                        Label("About", systemImage: "info.circle")
+                    }
+                    .accessibilityLabel("About RemSound")
+                    .accessibilityHint("App information and links to the RemSound source code")
+                }
+            }
+            .sheet(isPresented: $showingAbout) {
+                AboutView()
+            }
+        }
+    }
+
+    private var connectivityTab: some View {
         Form {
             statusSection
             connectionSection
             peersSection
             addPeerSection
-            audioSection
             sendSection
             securitySection
         }
         .formStyle(.grouped)
-        .navigationTitle("RemSound")
+    }
+
+    private var audioTab: some View {
+        Form {
+            audioSection
+        }
+        .formStyle(.grouped)
     }
 
     @ViewBuilder

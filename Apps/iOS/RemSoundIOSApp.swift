@@ -9,12 +9,12 @@ struct RemSoundIOSApp: App {
 
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
-                ReceiverRootView(controller: controller)
-            }
-            .task {
-                controller.start()
-            }
+            // ReceiverRootView provides its own NavigationStack (title + About button) and
+            // TabView, so it is presented directly here.
+            ReceiverRootView(controller: controller)
+                .task {
+                    controller.start()
+                }
         }
     }
 }
