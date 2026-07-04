@@ -55,9 +55,26 @@ body as the "What to Test" text. This skill prepares and publishes that release.
    `gh run watch <id> --exit-status` (the TestFlight step alone takes 5–15 min while App
    Store Connect processes the build). On failure, read the failed step's log
    (`gh run view <id> --log-failed`), fix, and either re-run the workflow
-   (`gh run rerun <id>`) for infra flakes or — for code/config fixes — delete the release
-   + tag (`gh release delete vX.Y.Z --cleanup-tag`, only with user OK) and start over.
+   (`gh run rerun <id> --failed`) for infra flakes / secret fixes or — for a `release.yml`
+   change — delete the release + tag (`gh release delete vX.Y.Z --cleanup-tag`, only with
+   user OK), push the fix, and re-create the release. A workflow edit only takes effect on a
+   re-created tag: the run always executes the workflow from the **tagged commit**, so a
+   plain `rerun` reuses the old YAML.
 
 8. **Report**: link the release, confirm the IPA asset is attached
    (`gh release view vX.Y.Z`), and remind the user the build reaches TestFlight testers
    automatically once processing finishes.
+
+## Known failure modes (mostly one-time setup; all hit on the first release, v0.1.0)
+
+- **Cert import — "passphrase ... not correct"**: the `.p12` was exported by OpenSSL 3.x in
+  its default (AES) format, which the runner's `security import` can't read. Re-export with
+  `openssl pkcs12 -export -legacy …` and update `APPLE_DISTRIBUTION_CERT_P12_BASE64`.
+- **Archive/export — "Cloud signing permission error" / "No profiles found"**: the App ID
+  `com.jonathan859.remsound` and its App Store Connect app record must exist, and the API key
+  should be **Admin** (App Manager can be refused for cloud signing).
+- **Archive — HTTP 401 on `listTeams`**: the API-key secrets don't line up — wrong Key ID /
+  Issuer ID, or a mangled `.p8`. Re-set `APP_STORE_CONNECT_API_PRIVATE_KEY` from the file via
+  stdin (`gh secret set … < AuthKey_XXXX.p8`); brand-new keys take a few minutes to activate.
+- **Upload — "Validation failed (409) … iOS 26 SDK"**: Apple's SDK floor. The signing job runs
+  on `macos-26` with the newest Xcode for this reason — do not drop it back to `macos-15`.

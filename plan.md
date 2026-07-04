@@ -42,17 +42,21 @@ the Actions logs.
      ```
    - Portal → Certificates → “+” → **Apple Distribution** → upload `dist.csr` → download
      `distribution.cer`.
-   - Convert to a password-protected .p12:
+   - Convert to a password-protected .p12 — the `-legacy` flag is REQUIRED: OpenSSL 3.x
+     defaults to an AES-encrypted .p12 the CI runner's `security import` rejects as a bad
+     passphrase (verified on the first release, OpenSSL 3.5.6):
      ```
      openssl x509 -in distribution.cer -inform DER -out dist.pem
-     openssl pkcs12 -export -inkey dist.key -in dist.pem -out dist.p12
+     openssl pkcs12 -export -legacy -inkey dist.key -in dist.pem -out dist.p12
      ```
      (Choose a strong export password — it becomes a GitHub secret.)
    - Keep `dist.key`/`dist.p12` somewhere safe and OFF the repo.
 
 5. **Create an App Store Connect API key**: App Store Connect → Users and Access →
-   Integrations → App Store Connect API → Team Keys → “+”, role **App Manager**.
-   Note the **Key ID** and **Issuer ID**, download the `.p8` file (one chance only).
+   Integrations → App Store Connect API → Team Keys → “+”, role **Admin** (an App Manager
+   key was refused with "Cloud signing permission error" during `-allowProvisioningUpdates`
+   on the first release — use Admin for cloud signing). Note the **Key ID** and
+   **Issuer ID**, download the `.p8` file (one chance only).
 
 6. **Create the app record**: App Store Connect → Apps → “+” → New App → iOS,
    name "RemSound" (or "RemSound Receiver" if taken), primary language, the bundle ID you
@@ -161,8 +165,10 @@ The mechanics above were checked against current Apple/GitHub/fastlane documenta
   pilot now passes `--skip_waiting_for_build_processing` alongside the changelog (waits
   only until the build appears, then exits); the export-compliance guidance above was
   tightened from "declare false" to the yes-with-standard-algorithms declaration.
-- Watch item: GitHub is migrating `macos-latest` to macOS 26 (mid-2026); the workflows
-  pin `macos-15` deliberately — revisit the pin when GitHub announces its retirement.
+- Runner pins: `release.yml`'s signing/upload job runs on **`macos-26`** (Xcode 26) because
+  App Store Connect rejects uploads not built with the iOS 26 SDK (hit on the first release,
+  2026-07-04). `build.yml` and `release.yml`'s unsigned/test jobs stay on `macos-15` — only
+  uploads have the SDK floor. Revisit both when GitHub retires `macos-15`.
 
 ## First-release checklist (condensed)
 

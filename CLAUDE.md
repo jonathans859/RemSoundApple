@@ -21,7 +21,9 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   last-scanned upstream commit and says which files matter.
 - Releases/TestFlight: use the `release` skill (`.claude/skills/release/`). Publishing a
   GitHub Release `vX.Y.Z` triggers `.github/workflows/release.yml` (signed IPA →
-  TestFlight, notes = release body). One-time setup steps live in `plan.md`.
+  TestFlight, notes = release body). One-time setup steps live in `plan.md`; recurring
+  signing/upload gotchas (the `.p12` `-legacy` export, the Xcode/iOS 26 SDK floor that
+  keeps the signing job on `macos-26`) are in the skill's "Known failure modes".
 
 ## Wire contract — breaking any of these silently breaks Windows interop
 
