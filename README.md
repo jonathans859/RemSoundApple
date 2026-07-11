@@ -40,6 +40,12 @@ Besides receiving, it can **send a microphone or input device** back to your Rem
   sending from Bluetooth headphones' own mic, their playback quality drops to the
   bidirectional link — that's a Bluetooth limitation, not an app bug.
 
+## Install (TestFlight)
+
+Beta builds for both iOS and macOS are distributed through TestFlight:
+**[join the RemSound beta](https://testflight.apple.com/join/pNCnj3z2)**. Install the
+TestFlight app (iOS App Store / Mac App Store), then open the link on the device.
+
 ## Repository layout
 
 | Path | Purpose |
