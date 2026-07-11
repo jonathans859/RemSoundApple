@@ -1,19 +1,24 @@
 # Plan: RemSound iOS → TestFlight via GitHub Actions + Releases
 
-Goal state (matches how you want to work):
+Goal state (matches how you want to work; revised 2026-07-11 — cloud signing + continuous
+internal TestFlight):
 
 - **Push to any branch** → existing `build.yml` runs tests + unsigned builds. (Already true.)
-- **Publish a GitHub Release** (tag `vX.Y.Z` + notes) → new `release.yml` runs tests, builds a
-  **signed IPA**, **uploads it to TestFlight** with the release notes as the TestFlight
-  "What to Test" text, and **attaches the IPA to the GitHub release**.
-- A `/release` Claude skill drives the whole thing: drafts notes, bumps the version, creates
-  the release after your confirmation, and watches the workflow.
+- **Push to `main`** → `testflight.yml` builds a **cloud-signed IPA** (Apple holds the
+  distribution key; nothing but the API key in secrets) and uploads it to TestFlight —
+  the **internal** group receives it via automatic distribution, "What to Test" = the
+  head commit subject.
+- **Publish a GitHub Release** (tag `vX.Y.Z` + notes) → same workflow uploads a build with
+  the release notes as "What to Test", **distributes it to the external group(s)**
+  (repo variable `TESTFLIGHT_EXTERNAL_GROUPS`, default "Beta"), and **attaches the IPA to
+  the GitHub release**.
+- A `/release` Claude skill drives releases via a Sonnet `release-manager` subagent
+  (`.claude/agents/release-manager.md`): it reads the commits since the last tag, drafts
+  the notes, bumps the version, and publishes after your confirmation.
 
-The workflow (`.github/workflows/release.yml`) and the skill
-(`.claude/skills/release/SKILL.md`) are already committed. What remains is the Apple-side
-setup you must do once, plus one repo gap (the app icon). Nothing here can be tested from
-this Windows machine — expect the first release to take one or two iterations of reading
-the Actions logs.
+The workflow (`.github/workflows/testflight.yml`, which replaced `release.yml` on
+2026-07-11) and the skill (`.claude/skills/release/SKILL.md`) are committed. Nothing here
+can be tested from this Windows machine — validation is reading the Actions logs.
 
 ---
 
@@ -34,23 +39,14 @@ the Actions logs.
    "RemSound". No extra capabilities needed (background audio is an Info.plist mode, not
    a capability; we deliberately do NOT request multicast).
 
-4. **Create an Apple Distribution certificate** (Windows-friendly, no Mac needed):
-   - In Git Bash: generate a private key + certificate signing request:
-     ```
-     openssl genrsa -out dist.key 2048
-     openssl req -new -key dist.key -out dist.csr -subj "/emailAddress=accounts@jonathan859.com/CN=Jonathan Distribution/C=DE"
-     ```
-   - Portal → Certificates → “+” → **Apple Distribution** → upload `dist.csr` → download
-     `distribution.cer`.
-   - Convert to a password-protected .p12 — the `-legacy` flag is REQUIRED: OpenSSL 3.x
-     defaults to an AES-encrypted .p12 the CI runner's `security import` rejects as a bad
-     passphrase (verified on the first release, OpenSSL 3.5.6):
-     ```
-     openssl x509 -in distribution.cer -inform DER -out dist.pem
-     openssl pkcs12 -export -legacy -inkey dist.key -in dist.pem -out dist.p12
-     ```
-     (Choose a strong export password — it becomes a GitHub secret.)
-   - Keep `dist.key`/`dist.p12` somewhere safe and OFF the repo.
+4. **Apple Distribution certificate — OBSOLETE since 2026-07-11.** The pipeline now uses
+   Apple **cloud signing**: `xcodebuild -allowProvisioningUpdates` with the Admin API key
+   creates and uses a cloud-managed Apple Distribution certificate whose private key
+   never leaves Apple. No CSR, no `.cer`, no `.p12`, no CI keychain. (Historical gotcha,
+   kept for reference: a locally-managed `.p12` had to be exported with OpenSSL's
+   `-legacy` flag or the runner's `security import` rejected the passphrase.) The old
+   locally-created certificate can be revoked in the portal once a cloud-signed release
+   has succeeded.
 
 5. **Create an App Store Connect API key**: App Store Connect → Users and Access →
    Integrations → App Store Connect API → Team Keys → “+”, role **Admin** (an App Manager
@@ -80,22 +76,31 @@ the Actions logs.
      RemSound peer — offer the public relay hostname as the way reviewers can see it
      connect, or state clearly that audio requires a second machine). Later builds of the
      same version usually skip re-review; new marketing versions get a (fast) re-review.
-   - Distribution to external groups is a manual click per build by default (TestFlight →
-     build → add to the external group). Keep that manual — you decide which builds the
-     public sees; internal group gets every build automatically.
+   - Distribution to external groups is automated since 2026-07-11: publishing a GitHub
+     Release adds that build to the group(s) named by the repo variable
+     `TESTFLIGHT_EXTERNAL_GROUPS` (default "Beta"). You still decide which builds the
+     public sees — by deciding what becomes a release; plain pushes to `main` only reach
+     the internal group.
 
 ## Phase 2 — GitHub repository secrets (you, ~10 min)
 
 Repo → Settings → Secrets and variables → Actions → New repository secret. The
-`release.yml` workflow expects exactly these names:
+`testflight.yml` workflow expects exactly these names:
 
 - `APPLE_TEAM_ID` — the 10-character Team ID.
-- `APPLE_DISTRIBUTION_CERT_P12_BASE64` — `base64 -w0 dist.p12` output (Git Bash).
-- `APPLE_DISTRIBUTION_CERT_PASSWORD` — the .p12 export password.
-- `KEYCHAIN_PASSWORD` — any random string (protects the throwaway CI keychain).
 - `APP_STORE_CONNECT_API_KEY_ID` — the API key's Key ID.
 - `APP_STORE_CONNECT_API_ISSUER_ID` — the Issuer ID.
 - `APP_STORE_CONNECT_API_PRIVATE_KEY` — the full text content of the `.p8` file.
+
+Optional repository **variable** (Variables tab, not Secrets):
+
+- `TESTFLIGHT_EXTERNAL_GROUPS` — comma-separated external TestFlight group names that
+  releases distribute to; defaults to `Beta` when unset. Must match App Store Connect
+  exactly.
+
+Removed 2026-07-11 with the switch to cloud signing (delete them from the repo settings):
+`APPLE_DISTRIBUTION_CERT_P12_BASE64`, `APPLE_DISTRIBUTION_CERT_PASSWORD`,
+`KEYCHAIN_PASSWORD`.
 
 ## Phase 3 — repo gaps to close before the first upload (Claude, needs your input)
 
@@ -123,22 +128,26 @@ Repo → Settings → Secrets and variables → Actions → New repository secre
    and the workflow run number becomes the ever-increasing build number. The `0.1.0` in
    the pbxproj is only the local/Xcode fallback; the release skill keeps it in sync.
 
-## Phase 4 — how a release then works (repeatable)
+## Phase 4 — how distribution then works (repeatable; revised 2026-07-11)
 
-1. Say "cut a release" (or invoke `/release`). The skill will:
-   - check the working tree is clean and CI is green on `main`,
-   - propose the next semver + plain-text release notes drafted from the commits since the
-     last tag (plain text on purpose — TestFlight shows "What to Test" without markdown),
-   - sync `MARKETING_VERSION` in the pbxproj and commit,
-   - after your explicit go-ahead: push and `gh release create vX.Y.Z`.
-2. Publishing the release triggers `release.yml`:
-   - `swift test`,
-   - signed archive (cloud-managed provisioning via the API key — no profiles to maintain),
-   - export IPA → **upload to TestFlight with the release body as the changelog**
-     (fastlane pilot waits for processing, then sets "What to Test"),
-   - attach `RemSound-iOS-vX.Y.Z.ipa` to the GitHub release,
-   - throwaway keychain deleted even on failure.
-3. TestFlight processing takes ~5–15 min; internal testers get the build automatically.
+1. **Internal testers need no ceremony**: every push to `main` triggers `testflight.yml`
+   (tests → cloud-signed archive → IPA → TestFlight upload with the head commit subject
+   as "What to Test"). The internal group's automatic distribution delivers it once
+   Apple's ~5–15 min processing finishes.
+2. **External testers get releases.** Say "cut a release" (or invoke `/release`). The
+   skill spawns the Sonnet `release-manager` subagent, which:
+   - checks the working tree is clean and CI is green on `main`,
+   - proposes the next semver + plain-text release notes drafted from the commits since
+     the last tag (plain text on purpose — TestFlight shows "What to Test" without
+     markdown),
+   - syncs `MARKETING_VERSION` in the pbxproj and commits,
+   - after your explicit go-ahead (relayed by the main session): pushes and
+     `gh release create vX.Y.Z`, then watches the run.
+3. Publishing the release triggers `testflight.yml`'s release path: `swift test` →
+   cloud-signed archive → IPA → upload with the release body as "What to Test" → wait for
+   processing → distribute to the external group(s) (first build of a new version passes
+   Beta App Review, usually within a day) → attach `RemSound-iOS-vX.Y.Z.ipa` to the
+   GitHub release.
 
 ## Phase 5 — later / optional
 
@@ -148,33 +157,36 @@ Repo → Settings → Secrets and variables → Actions → New repository secre
 - Screenshots, the full App Privacy questionnaire, and the App Store listing only matter
   for an actual App Store release, not TestFlight.
 
-## Verification notes (researched 2026-07-03)
+## Verification notes (researched 2026-07-03; revised 2026-07-11 for cloud signing)
 
 The mechanics above were checked against current Apple/GitHub/fastlane documentation:
 
-- Confirmed: the keychain-import steps match GitHub's official macOS-runner signing guide
-  (including `base64 --decode -o`); fastlane is preinstalled on `macos-15` runners
-  (default Xcode 16.4, fine for the iOS 18 target); `method = app-store-connect` is the
-  current export method name (`app-store` is deprecated); pilot's `--changelog` sets
-  "What to Test" once the build appears in App Store Connect; internal TestFlight is
+- Confirmed: fastlane is preinstalled on GitHub macOS runners; `method =
+  app-store-connect` is the current export method name (`app-store` is deprecated);
+  pilot's `--changelog` sets "What to Test" once the build appears in App Store Connect;
+  `--distribute_external true --groups …` waits for processing, submits the first build
+  of a version to Beta App Review, and adds it to the group; internal TestFlight is
   limited to App Store Connect users (max 100), external to 10 000 with Beta App Review
   on the first build per version.
-- Fixed after verification: build numbers now include the run **attempt**
-  (`run_number.run_attempt`) because re-running a failed workflow keeps the same
-  run_number — a re-run after a partially-successful upload would otherwise collide;
-  pilot now passes `--skip_waiting_for_build_processing` alongside the changelog (waits
-  only until the build appears, then exits); the export-compliance guidance above was
-  tightened from "declare false" to the yes-with-standard-algorithms declaration.
-- Runner pins: `release.yml`'s signing/upload job runs on **`macos-26`** (Xcode 26) because
-  App Store Connect rejects uploads not built with the iOS 26 SDK (hit on the first release,
-  2026-07-04). `build.yml` and `release.yml`'s unsigned/test jobs stay on `macos-15` — only
+- Cloud signing (2026-07-11): archive + export run with `-allowProvisioningUpdates` and
+  the Admin API key only — Xcode creates/uses a **cloud-managed Apple Distribution
+  certificate** (WWDC21 "cloud signing"); no keychain, `.p12`, or profile on the runner.
+  The old keychain-import steps and their secrets are gone.
+- Build numbers (2026-07-11): now `commit-count.kind.run-attempt` (kind: 0 = push build,
+  1 = release build) because two triggers upload builds — the release is usually tagged
+  on a commit whose push already uploaded a build of the same marketing version, so
+  run-number-based schemes would collide across the two events. Commit count is monotonic
+  on `main`; the attempt keeps re-runs unique after a partially-successful upload.
+- Runner pins: `testflight.yml`'s signing/upload job runs on **`macos-26`** (Xcode 26)
+  because App Store Connect rejects uploads not built with the iOS 26 SDK (hit on the
+  first release, 2026-07-04). `build.yml` and the test jobs stay on `macos-15` — only
   uploads have the SDK floor. Revisit both when GitHub retires `macos-15`.
 
-## First-release checklist (condensed)
+## First-release checklist (condensed; completed 2026-07-04 with v0.1.0)
 
 1. Phase 1 steps 2–7 done, Phase 2 secrets set.
 2. Icon PNG handed to Claude → icon commit lands; encryption key decision made.
 3. `/release` → confirm version + notes → release published.
-4. Watch the `Release` workflow (`gh run watch` or share the logs); iterate if the first
-   signing/upload attempt fails — that is normal.
+4. Watch the `TestFlight` workflow (`gh run watch` or share the logs); iterate if the
+   first signing/upload attempt fails — that is normal.
 5. Build appears in TestFlight → install via the TestFlight app on the iPhone.

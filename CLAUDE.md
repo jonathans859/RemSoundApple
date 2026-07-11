@@ -19,11 +19,16 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 - To check whether the Windows repo changed the protocol since the last review, use the
   `upstream-protocol-sync` skill (`.claude/skills/upstream-protocol-sync/`) — it tracks the
   last-scanned upstream commit and says which files matter.
-- Releases/TestFlight: use the `release` skill (`.claude/skills/release/`). Publishing a
-  GitHub Release `vX.Y.Z` triggers `.github/workflows/release.yml` (signed IPA →
-  TestFlight, notes = release body). One-time setup steps live in `plan.md`; recurring
-  signing/upload gotchas (the `.p12` `-legacy` export, the Xcode/iOS 26 SDK floor that
-  keeps the signing job on `macos-26`) are in the skill's "Known failure modes".
+- TestFlight: `.github/workflows/testflight.yml` cloud-signs via the App Store Connect
+  API key (Admin; no certificates or profiles anywhere) and uploads on **every push to
+  `main`** (internal testers, automatic distribution, changelog = commit subject) and on
+  **every published GitHub Release `vX.Y.Z`** (external testers too — repo variable
+  `TESTFLIGHT_EXTERNAL_GROUPS`, default "Beta"; notes = "What to Test"; IPA attached to
+  the release). To cut a release use the `release` skill (`.claude/skills/release/`) —
+  it drives the Sonnet `release-manager` subagent (`.claude/agents/release-manager.md`).
+  One-time setup steps live in `plan.md`; recurring gotchas (Admin key required for cloud
+  signing, the Xcode/iOS 26 SDK floor that keeps the signing job on `macos-26`) are in
+  the skill's "Known failure modes".
 
 ## Wire contract — breaking any of these silently breaks Windows interop
 

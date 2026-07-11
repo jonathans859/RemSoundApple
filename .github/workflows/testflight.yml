@@ -1,0 +1,184 @@
+name: TestFlight
+
+# Every push to main builds a cloud-signed IPA and uploads it to TestFlight; the internal
+# tester group (set to automatic distribution in App Store Connect) receives it as soon as
+# processing finishes, with the head commit subject as "What to Test". Publishing a GitHub
+# Release (tag vX.Y.Z) additionally sets the release notes as "What to Test", distributes
+# the build to the external tester group(s), and attaches the IPA to the release. The
+# first build of each marketing version goes through Beta App Review before external
+# testers see it — that wait is Apple-side and normal.
+#
+# Signing is Apple *cloud signing*: automatic signing + the App Store Connect API key
+# (must be role Admin) via -allowProvisioningUpdates. Apple holds the distribution
+# certificate's private key; no certificate, .p12, or profile exists in this repo or its
+# secrets. Required secrets:
+#   APPLE_TEAM_ID, APP_STORE_CONNECT_API_KEY_ID, APP_STORE_CONNECT_API_ISSUER_ID,
+#   APP_STORE_CONNECT_API_PRIVATE_KEY
+# Optional repository VARIABLE (Settings → Secrets and variables → Actions → Variables):
+#   TESTFLIGHT_EXTERNAL_GROUPS — comma-separated external TestFlight group names that
+#   releases are distributed to (defaults to "Beta"; must match App Store Connect exactly).
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  contents: write # gh release upload
+
+# Serialize uploads: parallel pilot runs against the same app record race App Store
+# Connect processing, and ordered uploads keep TestFlight's build list sensible.
+concurrency:
+  group: testflight-upload
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: RemSoundKit unit tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run tests
+        run: swift test --package-path RemSoundKit
+
+  testflight:
+    name: Cloud-signed iOS build → TestFlight
+    needs: test
+    # App Store Connect rejects uploads not built with the iOS 26 SDK (Xcode 26+), so this
+    # job must run on the macOS 26 image — NOT macos-15 (Xcode 16.4 / iOS 18.5 SDK). Only
+    # uploads have the SDK floor; tests and unsigned CI stay on the older image.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # build numbers derive from the commit count
+
+      - name: Use the newest installed Xcode (iOS 26 SDK required for App Store uploads)
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+
+      - name: Derive marketing version and build number
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${TAG#v}"
+            if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Release tag must be vMAJOR.MINOR.PATCH (got '$TAG')"
+              exit 1
+            fi
+            KIND=1
+            IPA="RemSound-iOS-$TAG.ipa"
+          else
+            # Push build: ship whatever fallback version the pbxproj carries (the release
+            # skill keeps it in sync with the next tag).
+            VERSION=$(sed -n 's/^[[:space:]]*MARKETING_VERSION = \(.*\);$/\1/p' RemSound.xcodeproj/project.pbxproj | head -1)
+            KIND=0
+            IPA="RemSound-iOS-$VERSION-$(git rev-parse --short HEAD).ipa"
+          fi
+          # CFBundleVersion must be unique per marketing version and should only grow.
+          # commit-count.kind.attempt: the commit count is monotonic on main, kind keeps
+          # the push build and the release build of the SAME commit distinct (a release is
+          # usually tagged on a commit that already produced a push build), and the run
+          # attempt keeps a re-run unique when a previous attempt uploaded before failing.
+          BUILD="$(git rev-list --count HEAD).$KIND.${{ github.run_attempt }}"
+          {
+            echo "marketing=$VERSION"
+            echo "build=$BUILD"
+            echo "ipa=$IPA"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write App Store Connect API key
+        env:
+          API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s' "$API_PRIVATE_KEY" > "$RUNNER_TEMP/asc/AuthKey.p8"
+          jq -n --arg kid "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
+                --arg iss "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}" \
+                --arg key "$API_PRIVATE_KEY" \
+            '{key_id: $kid, issuer_id: $iss, key: $key, duration: 1200, in_house: false}' \
+            > "$RUNNER_TEMP/asc/api_key.json"
+
+      - name: Archive (cloud signing — Apple signs with its cloud-managed certificate)
+        run: |
+          xcodebuild archive \
+            -project RemSound.xcodeproj \
+            -scheme RemSound-iOS \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/RemSound.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
+            -authenticationKeyID "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}" \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            MARKETING_VERSION="${{ steps.version.outputs.marketing }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.version.outputs.build }}"
+
+      - name: Export IPA
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>${{ secrets.APPLE_TEAM_ID }}</string>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/RemSound.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
+            -authenticationKeyID "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}"
+          cp "$RUNNER_TEMP"/export/*.ipa "${{ steps.version.outputs.ipa }}"
+
+      - name: Upload to TestFlight (internal testers via automatic distribution)
+        if: github.event_name == 'push'
+        run: |
+          # changelog + skip_waiting together: pilot waits only until the build APPEARS in
+          # App Store Connect, sets "What to Test", then skips the rest of the processing
+          # wait. The internal group's automatic-distribution flag delivers the build once
+          # Apple finishes processing — no group assignment is needed here.
+          CHANGELOG="$(git log -1 --pretty=%s)"
+          fastlane pilot upload \
+            --ipa "${{ steps.version.outputs.ipa }}" \
+            --api_key_path "$RUNNER_TEMP/asc/api_key.json" \
+            --changelog "$CHANGELOG" \
+            --skip_waiting_for_build_processing true
+
+      - name: Upload to TestFlight and distribute to external testers
+        if: github.event_name == 'release'
+        env:
+          RELEASE_NOTES: ${{ github.event.release.body }}
+          EXTERNAL_GROUPS: ${{ vars.TESTFLIGHT_EXTERNAL_GROUPS || 'Beta' }}
+        run: |
+          if [ -z "$RELEASE_NOTES" ]; then
+            echo "::error::Release body is empty — external distribution requires 'What to Test' text"
+            exit 1
+          fi
+          # No skip_waiting here: adding the build to external groups requires the
+          # processed build, so pilot must sit out the 5–15 min App Store Connect
+          # processing. It then sets "What to Test", submits the first build of a new
+          # version to Beta App Review, and adds the build to the group(s).
+          fastlane pilot upload \
+            --ipa "${{ steps.version.outputs.ipa }}" \
+            --api_key_path "$RUNNER_TEMP/asc/api_key.json" \
+            --changelog "$RELEASE_NOTES" \
+            --distribute_external true \
+            --groups "$EXTERNAL_GROUPS"
+
+      - name: Attach IPA to the GitHub release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" "${{ steps.version.outputs.ipa }}" --clobber
