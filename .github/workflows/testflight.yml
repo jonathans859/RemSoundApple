@@ -103,12 +103,17 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             VERSION="${TAG#v}"
-            if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::Release tag must be vMAJOR.MINOR.PATCH (got '$TAG')"
+            # vX.Y.Z = NEW marketing version — its first build waits in Beta App Review
+            # before external testers see it. vX.Y.Z-bN = re-release of the SAME
+            # marketing version: external testers usually get it without a fresh review;
+            # build-number uniqueness already comes from the commit count.
+            if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-b[0-9]+)?$ ]]; then
+              echo "::error::Release tag must be vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-b<N> (got '$TAG')"
               exit 1
             fi
             KIND=1
             IPA="RemSound-iOS-$TAG.ipa"
+            VERSION="${VERSION%%-*}"
           else
             # Push build: ship whatever fallback version the pbxproj carries (the release
             # skill keeps it in sync with the next tag).
@@ -266,12 +271,15 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             VERSION="${TAG#v}"
-            if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::Release tag must be vMAJOR.MINOR.PATCH (got '$TAG')"
+            # Same two tag forms as the iOS job: vX.Y.Z bumps the marketing version
+            # (Beta App Review), vX.Y.Z-bN re-releases the same version review-free.
+            if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-b[0-9]+)?$ ]]; then
+              echo "::error::Release tag must be vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-b<N> (got '$TAG')"
               exit 1
             fi
             KIND=1
             PKG="RemSound-macOS-$TAG.pkg"
+            VERSION="${VERSION%%-*}"
           else
             VERSION=$(sed -n 's/^[[:space:]]*MARKETING_VERSION = \(.*\);$/\1/p' RemSound.xcodeproj/project.pbxproj | head -1)
             KIND=0

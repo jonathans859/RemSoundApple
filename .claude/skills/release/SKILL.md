@@ -11,11 +11,17 @@ Apple cloud signing (App Store Connect API key, no local certificates):
 
 - **Every push to `main`** already uploads builds that internal testers receive
   automatically — no release needed for that.
-- **Publishing a GitHub Release** (tag `vX.Y.Z`) uploads both builds with the release
-  body as "What to Test", distributes them to the **external** tester group(s)
-  (repo variable `TESTFLIGHT_EXTERNAL_GROUPS`, default "Beta"), and attaches the IPA and
-  PKG to the release. The first build of a new marketing version waits in Beta App Review
-  (hours, per platform) before external testers see it.
+- **Publishing a GitHub Release** uploads both builds with the release body as
+  "What to Test", distributes them to the **external** tester group(s) (repo variable
+  `TESTFLIGHT_EXTERNAL_GROUPS`, default "Beta"), and attaches the IPA and PKG to the
+  release. Two tag forms select the release tier (Beta App Review is per marketing
+  VERSION, not per build — that's the whole point of the split):
+  - **`vX.Y.Z-bN`** (e.g. `v0.3.0-b2`) — re-release of the CURRENT marketing version:
+    external testers get it, usually with no fresh review. **The default** for minor
+    fixes and iteration.
+  - **`vX.Y.Z`** — raises the marketing version: its first build waits in Beta App
+    Review (hours, per platform) before external testers see it. For meaningful
+    feature milestones and anything headed for the App Store.
 
 This skill publishes that release by driving the `release-manager` subagent (Sonnet —
 see `.claude/agents/release-manager.md`). One-time Apple/secrets setup lives in `plan.md`.
@@ -25,7 +31,9 @@ see `.claude/agents/release-manager.md`). One-time Apple/secrets setup lives in 
 - **Creating the release and pushing are outward-facing** — a release reaches external
   testers. The subagent prepares everything; you show the user the exact version + notes
   and only tell the subagent to publish after they say go.
-- Tag format must be `vMAJOR.MINOR.PATCH` — the workflow rejects anything else.
+- Tag format must be `vMAJOR.MINOR.PATCH` or `vMAJOR.MINOR.PATCH-b<N>` — the workflow
+  rejects anything else. A `-bN` tag must sit on a commit AFTER the base tag's commit
+  (the build number derives from the commit count; same commit would collide).
 - Release notes become TestFlight "What to Test" verbatim: **plain sentences, no markdown
   tables/headings/links** (TestFlight renders raw text; the user's testers may use screen
   readers — plain prose reads best). The workflow fails an empty release body on purpose.
@@ -58,23 +66,29 @@ see `.claude/agents/release-manager.md`). One-time Apple/secrets setup lives in 
    (`gh secret list`): `APPLE_TEAM_ID`, `APP_STORE_CONNECT_API_KEY_ID`,
    `APP_STORE_CONNECT_API_ISSUER_ID`, `APP_STORE_CONNECT_API_PRIVATE_KEY`. If missing,
    stop and point at `plan.md`.
-2. Pick the version: `git describe --tags --abbrev=0` (or `gh release list`) for the
-   latest `vX.Y.Z`; propose the semver bump implied by the changes (flag it for the user
-   if ambiguous).
+2. Pick the tier and version: `git describe --tags --abbrev=0` (or `gh release list`)
+   for the latest tag. **Default to a same-version re-release** (`vX.Y.Z-bN`, N = next
+   free suffix for the current version) — minor fixes and iteration should reach
+   external testers without a Beta App Review wait. Propose a version RAISE (`vX.Y.Z`,
+   semver bump implied by the changes) only for substantial feature milestones or when
+   the user asked for one. Always state which tier you chose and why — the user decides.
 3. Draft the notes from `git log <lasttag>..HEAD --oneline` plus reading the diffs where
    the subject line is unclear: 3–8 plain sentences aimed at a tester ("what changed,
    what to try"). Not a commit list, no markdown.
-4. Sync the fallback version: update all `MARKETING_VERSION = <old>;` occurrences in
-   `RemSound.xcodeproj/project.pbxproj` to the new version (iOS and macOS configs — keep
-   them identical) and commit. The workflow injects the real version from the tag; this
-   keeps local Xcode builds and the push-triggered TestFlight builds honest.
+4. Sync the fallback version — only when the marketing version RAISES: update all
+   `MARKETING_VERSION = <old>;` occurrences in `RemSound.xcodeproj/project.pbxproj` to
+   the new version (iOS and macOS configs — keep them identical) and commit. The
+   workflow injects the real version from the tag (a `-bN` suffix is stripped); this
+   keeps local Xcode builds and the push-triggered TestFlight builds honest. For a
+   `vX.Y.Z-bN` re-release the fallback already matches — skip this step.
 5. Report and stop — no push, no release.
 
 **Phase "publish"**
 
 6. `git push`, then create the release with the notes via a body file (avoids quoting
    issues):
-   `gh release create vX.Y.Z --target main --title "RemSound vX.Y.Z" --notes-file <file>`
+   `gh release create <tag> --target main --title "RemSound <tag without v>" --notes-file <file>`
+   (works the same for `vX.Y.Z` and `vX.Y.Z-bN` tags)
    (The push also triggers a push-event TestFlight run for internal testers; that is
    expected and harmless alongside the release run.)
 7. Watch the run: `gh run list --workflow TestFlight --event release --limit 1`, then
