@@ -92,6 +92,15 @@ see `.claude/agents/release-manager.md`). One-time Apple/secrets setup lives in 
 
 ## Known failure modes
 
+- **Archive — "Your account has reached the maximum number of certificates" + "No signing
+  certificate 'Mac Development' / no iOS App Development profiles"** (first hit v0.3.0,
+  2026-07-11): xcodebuild's ARCHIVE step signs with an Apple **Development** identity, and
+  on an ephemeral runner `-allowProvisioningUpdates` mints a fresh Development certificate
+  every run (the private key never persists), until Apple's per-account cap is hit. Fix:
+  the user revokes the CI-minted Apple Development certificates in the portal
+  (developer.apple.com → Certificates; do NOT touch the cloud-managed **Apple
+  Distribution** certificate), then `gh run rerun <id> --failed`. Recurs until the archive
+  step stops minting per-run Development certs.
 - **Archive/export — "Cloud signing permission error" / "No profiles found"**: the App ID
   `com.jonathan859.remsound` and its App Store Connect app record must exist, and the API
   key must be **Admin** (App Manager is refused for cloud signing).
