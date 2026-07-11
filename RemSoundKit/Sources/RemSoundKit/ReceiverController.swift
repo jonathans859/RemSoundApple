@@ -139,6 +139,13 @@ public final class ReceiverController {
     private var passwordGeneration = 0
     /// Resolved IPv4 addresses (network byte order) per manual peer id.
     private var manualResolved: [UUID: [UDPEndpoint]] = [:]
+    /// DNS retry state (issue #1): a manual peer whose name fails to resolve once — e.g.
+    /// a Tailscale MagicDNS name looked up before the tunnel is fully up — must not stay
+    /// "Resolving…" forever. The 1 Hz tick re-kicks resolution while any peer is
+    /// unresolved, paced by this timestamp and serialized by the in-flight flag.
+    private static let resolveRetryInterval: TimeInterval = 5
+    private var lastResolveAttempt = Date.distantPast
+    private var resolveInFlight = false
     /// Addresses currently delivering audio — drives the "Receiving from N peers" summary.
     private var audibleAddresses: Set<UInt32> = []
     /// Connect/disconnect cue state per selected peer, keyed by the stable primary address.
@@ -343,6 +350,9 @@ public final class ReceiverController {
     }
 
     private func resolveManualPeers() {
+        guard !resolveInFlight else { return }
+        resolveInFlight = true
+        lastResolveAttempt = Date()
         let peersToResolve = manualPeers
         Task.detached { [weak self] in
             var resolved: [UUID: [UDPEndpoint]] = [:]
@@ -352,11 +362,31 @@ public final class ReceiverController {
             let result = resolved
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.manualResolved = result
+                self.resolveInFlight = false
+                // Merge per peer instead of replacing wholesale: a transient DNS failure
+                // during a retry must not wipe a previously good resolution (that would
+                // drop the peer from the allow-list mid-stream), a peer added while this
+                // lookup was in flight must not lose its own fresher entry, and a peer
+                // removed meanwhile must not be re-inserted.
+                for (id, endpoints) in result where self.manualPeers.contains(where: { $0.id == id }) {
+                    if endpoints.isEmpty, !(self.manualResolved[id] ?? []).isEmpty { continue }
+                    self.manualResolved[id] = endpoints
+                }
                 self.applyPeerSelection()
                 self.refreshNow()
             }
         }
+    }
+
+    /// Issue #1: names that failed to resolve retry every few seconds while receiving is
+    /// on, so a Tailscale name entered (or launched) before the tunnel was up heals itself.
+    /// Runs on the 1 Hz tick; plain DNS on a detached task, no audio-server IPC involved.
+    private func retryUnresolvedPeersIfNeeded() {
+        guard isRunning, !resolveInFlight,
+              manualPeers.contains(where: { (manualResolved[$0.id] ?? []).isEmpty }),
+              Date().timeIntervalSince(lastResolveAttempt) >= Self.resolveRetryInterval
+        else { return }
+        resolveManualPeers()
     }
 
     /// Push the current selection into the allow-list, heartbeat tracking, and discovery
@@ -400,6 +430,7 @@ public final class ReceiverController {
             connectionDetails = []
             return
         }
+        retryUnresolvedPeersIfNeeded()
         updateCues()
         refreshPeerList()
         updateSendTargets()
