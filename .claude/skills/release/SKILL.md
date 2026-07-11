@@ -106,6 +106,17 @@ see `.claude/agents/release-manager.md`). One-time Apple/secrets setup lives in 
 
 ## Known failure modes
 
+- **External distribution — "Another build is in review" (Spaceship::UnexpectedResponse)**
+  (first hit v0.3.0-b1, 2026-07-12): Apple allows ONE build per version train and platform
+  in Beta App Review at a time. A `-bN` re-release published while the base `vX.Y.Z`'s
+  first build is still "Waiting for Review" fails at the external-distribute step — after
+  a successful upload, so the build reaches internal testers and sits processed in ASC;
+  only external distribution and the release-asset attach are missing. Do NOT delete the
+  release or blind-rerun immediately: wait for the pending review to clear (ASC →
+  TestFlight; the account gets an email), then `gh run rerun <id> --failed` — the rerun
+  re-archives with a new run-attempt build number, so no collision. Takeaway for tier
+  advice: a `-bN` re-release skips a NEW review, but cannot jump a review that is still
+  in progress for the same version.
 - **Archive — "Your account has reached the maximum number of certificates" + "No signing
   certificate 'Mac Development' / no iOS App Development profiles"** (first hit v0.3.0,
   2026-07-11): xcodebuild's ARCHIVE step signs with an Apple **Development** identity, and
