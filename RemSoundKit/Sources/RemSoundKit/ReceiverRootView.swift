@@ -19,11 +19,27 @@ public struct ReceiverRootView: View {
         // sending, password) and an Audio tab (receiving playback options). There is no push
         // navigation, so nesting the TabView inside the stack keeps one toolbar across tabs.
         NavigationStack {
+            // The Tab API (not .tabItem) so the Audio tab bar item itself exposes the mute
+            // state as its accessibility value. SwiftUI offers no way to attach a custom
+            // VoiceOver action to a native tab bar item (TabContent has label/value/hint
+            // only), so quick mute is the magic tap below instead — the hint on the Audio
+            // tab teaches the gesture.
             TabView {
-                connectivityTab
-                    .tabItem { Label("Connectivity", systemImage: "network") }
-                audioTab
-                    .tabItem { Label("Audio", systemImage: "speaker.wave.2.fill") }
+                Tab("Connectivity", systemImage: "network") {
+                    connectivityTab
+                }
+#if os(iOS)
+                Tab("Audio", systemImage: "speaker.wave.2.fill") {
+                    audioTab
+                }
+                .accessibilityValue("Muted", isEnabled: controller.isMuted)
+                .accessibilityHint("Two-finger double tap anywhere mutes or unmutes the audio")
+#else
+                Tab("Audio", systemImage: "speaker.wave.2.fill") {
+                    audioTab
+                }
+                .accessibilityValue("Muted", isEnabled: controller.isMuted)
+#endif
             }
             .navigationTitle("RemSound")
 #if os(iOS)
@@ -44,6 +60,14 @@ public struct ReceiverRootView: View {
                 AboutView()
             }
         }
+#if os(iOS)
+        // VoiceOver magic tap = quick mute from anywhere in the app, including with focus
+        // on the tab bar. Root-level so it resolves no matter which element is focused.
+        // (.magicTap does not exist on macOS.)
+        .accessibilityAction(.magicTap) {
+            controller.toggleMute()
+        }
+#endif
     }
 
     private var connectivityTab: some View {

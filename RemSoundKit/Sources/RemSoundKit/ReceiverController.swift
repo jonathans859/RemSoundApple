@@ -82,6 +82,14 @@ public final class ReceiverController {
         didSet { mixer.isMuted = isMuted }
     }
 
+    /// Quick mute for the VoiceOver magic tap (two-finger double tap, iOS). Announces the
+    /// result because the gesture fires from anywhere — the mute toggle is usually not the
+    /// focused element, so its state change would otherwise be silent.
+    public func toggleMute() {
+        isMuted.toggle()
+        announce(isMuted ? "Audio muted" : "Audio unmuted")
+    }
+
     public var targetLatencyMs: Int {
         didSet {
             mixer.setTargetLatencyMs(targetLatencyMs)

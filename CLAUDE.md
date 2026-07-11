@@ -76,6 +76,10 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 - Opus via SPM `alta/swift-opus` pinned `exact: "0.0.2"` (raw C API needed for the FEC flag).
 - **Screen-reader accessibility is the top priority**: every control labeled, status lines
   are plain sentences, audio start/stop fires cues + a VoiceOver announcement (iOS).
+  VoiceOver **magic tap** (two-finger double tap) toggles mute anywhere in the iOS app
+  (`ReceiverController.toggleMute()` announces the result); the Audio tab bar item
+  reports "Muted" as its accessibility value. SwiftUI cannot attach custom VoiceOver
+  actions to native tab bar items — don't try, the magic tap IS the quick-mute action.
 
 ## Pitfalls already hit (don't re-learn these)
 
