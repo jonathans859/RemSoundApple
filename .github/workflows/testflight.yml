@@ -90,16 +90,39 @@ jobs:
           key: ci-signing-keychain-${{ github.run_id }}-${{ github.run_attempt }}-ios
           restore-keys: ci-signing-keychain-
 
+      # A RESTORED keychain arrives locked, and `security set-keychain-settings` on a
+      # locked keychain pops a SecurityAgent GUI prompt that hangs a headless runner
+      # forever (first hit 2026-07-11: both jobs wedged 4.6 h on the first cache
+      # restore) — so unlock-keychain (non-interactive: -p errors instead of prompting)
+      # must run FIRST, and the step carries a timeout with a fresh-keychain fallback.
       - name: Activate the CI signing keychain
+        id: keychain
+        timeout-minutes: 5
+        continue-on-error: true
         run: |
           KEYCHAIN="$HOME/Library/Keychains/ci-signing.keychain-db"
           if [ ! -f "$KEYCHAIN" ]; then
             security create-keychain -p remsound-ci "$KEYCHAIN"
           fi
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p remsound-ci "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
           # Non-interactive codesign access to keys restored from a previous run's cache.
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k remsound-ci "$KEYCHAIN" >/dev/null 2>&1 || true
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          security default-keychain -s "$KEYCHAIN"
+          echo "activated=true" >> "$GITHUB_OUTPUT"
+
+      # Corrupt/unusable restored keychain: start over. Costs one freshly minted Apple
+      # Development certificate (the thing the cache exists to avoid) — acceptable on
+      # this rare path, and the re-saved cache makes the next run cheap again.
+      - name: Recreate the signing keychain (restored one failed to activate)
+        if: steps.keychain.outputs.activated != 'true'
+        run: |
+          KEYCHAIN="$HOME/Library/Keychains/ci-signing.keychain-db"
+          rm -f "$KEYCHAIN"
+          security create-keychain -p remsound-ci "$KEYCHAIN"
+          security unlock-keychain -p remsound-ci "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
           security default-keychain -s "$KEYCHAIN"
 
@@ -258,16 +281,33 @@ jobs:
           key: ci-signing-keychain-${{ github.run_id }}-${{ github.run_attempt }}-macos
           restore-keys: ci-signing-keychain-
 
+      # Unlock BEFORE set-keychain-settings — same locked-restored-keychain hang as the
+      # iOS job (see the comment there), same timeout + fresh-keychain fallback.
       - name: Activate the CI signing keychain
+        id: keychain
+        timeout-minutes: 5
+        continue-on-error: true
         run: |
           KEYCHAIN="$HOME/Library/Keychains/ci-signing.keychain-db"
           if [ ! -f "$KEYCHAIN" ]; then
             security create-keychain -p remsound-ci "$KEYCHAIN"
           fi
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p remsound-ci "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
           # Non-interactive codesign access to keys restored from a previous run's cache.
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k remsound-ci "$KEYCHAIN" >/dev/null 2>&1 || true
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          security default-keychain -s "$KEYCHAIN"
+          echo "activated=true" >> "$GITHUB_OUTPUT"
+
+      - name: Recreate the signing keychain (restored one failed to activate)
+        if: steps.keychain.outputs.activated != 'true'
+        run: |
+          KEYCHAIN="$HOME/Library/Keychains/ci-signing.keychain-db"
+          rm -f "$KEYCHAIN"
+          security create-keychain -p remsound-ci "$KEYCHAIN"
+          security unlock-keychain -p remsound-ci "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
           security default-keychain -s "$KEYCHAIN"
 
