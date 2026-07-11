@@ -15,7 +15,9 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 - Put new code in `RemSoundKit/Sources/**` — SPM picks those files up with **no** project
   edits. Adding a file to an app target instead requires hand-editing the hand-written
   `RemSound.xcodeproj/project.pbxproj` (PBXBuildFile + PBXFileReference + group + Sources
-  phase). Prefer the package.
+  phase). Prefer the package — with ONE exception: App Intents code must live in the app
+  targets (`Apps/Shared/RemSoundIntents.swift`, in both Sources phases), because
+  SPM-hosted intents silently never appear in Shortcuts on any device.
 - To check whether the Windows repo changed the protocol since the last review, use the
   `upstream-protocol-sync` skill (`.claude/skills/upstream-protocol-sync/`) — it tracks the
   last-scanned upstream commit and says which files matter.
@@ -128,13 +130,13 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   `OpusStreamEncoder.swift` (`RemOpusShim` C target wraps variadic `opus_encoder_ctl`).
 - App layer: `ReceiverController.swift` (@MainActor façade, 1 Hz refresh tick; the apps and
   the Shortcuts actions share ONE instance via `ReceiverController.shared`),
-  `AppIntents.swift` (Shortcuts actions: volume up/down, receiving on/off + toggle, mute
-  set + toggle — package-hosted App Intents, so each app target MUST keep its
-  `AppIntentsPackage` registration or the actions silently vanish from Shortcuts; the
-  parameterless toggles exist because App Shortcuts can't pre-fill a Bool. Each app target
-  also carries its own `RemSoundAppShortcuts: AppShortcutsProvider` — ready-made shortcuts
-  + Siri phrases; it must stay IN the app target because AppIntentsSSUTraining reads the
-  literal phrase strings there. No entitlements or ASC setup involved),
+  `Apps/Shared/RemSoundIntents.swift` (Shortcuts actions: volume up/down, receiving
+  on/off + toggle, mute set + toggle, plus the `AppShortcutsProvider` with Siri phrases —
+  compiled into BOTH app targets, deliberately NOT in RemSoundKit: SPM-library-hosted App
+  Intents extract metadata cleanly at build time yet are never surfaced by on-device
+  discovery on either platform, even via `AppIntentsPackage` forwarding — burned a full
+  day on this 2026-07-11/12; the parameterless toggles exist because App Shortcuts can't
+  pre-fill a Bool. No entitlements or ASC setup involved),
   `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a two-tab
   `TabView`: **Connectivity** = status/peers/add-peer/send/password, **Audio** = playback
   options; a persistent top-right About button opens `AboutView.swift`, which links to this
