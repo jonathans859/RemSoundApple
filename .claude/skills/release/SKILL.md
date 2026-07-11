@@ -3,18 +3,19 @@ name: release
 description: Cut a RemSound release - a Sonnet release-manager subagent reads the commits since the last tag, drafts plain-text "What to Test" notes, bumps the version, and (after explicit user confirmation) publishes the GitHub Release that distributes the build to external TestFlight testers. Use when asked to "cut a release", "publish a release", "ship to TestFlight", or "make a new version".
 ---
 
-# Release RemSound (GitHub Release → cloud-signed IPA → external TestFlight)
+# Release RemSound (GitHub Release → cloud-signed IPA + PKG → external TestFlight)
 
-`.github/workflows/testflight.yml` handles all TestFlight distribution with Apple cloud
-signing (App Store Connect API key, no local certificates):
+`.github/workflows/testflight.yml` handles all TestFlight distribution for BOTH platforms
+(iOS IPA + macOS PKG, parallel jobs, one shared app record / universal purchase) with
+Apple cloud signing (App Store Connect API key, no local certificates):
 
-- **Every push to `main`** already uploads a build that internal testers receive
+- **Every push to `main`** already uploads builds that internal testers receive
   automatically — no release needed for that.
-- **Publishing a GitHub Release** (tag `vX.Y.Z`) uploads a build with the release body as
-  "What to Test", distributes it to the **external** tester group(s)
-  (repo variable `TESTFLIGHT_EXTERNAL_GROUPS`, default "Beta"), and attaches the IPA to
-  the release. The first build of a new marketing version waits in Beta App Review
-  (hours) before external testers see it.
+- **Publishing a GitHub Release** (tag `vX.Y.Z`) uploads both builds with the release
+  body as "What to Test", distributes them to the **external** tester group(s)
+  (repo variable `TESTFLIGHT_EXTERNAL_GROUPS`, default "Beta"), and attaches the IPA and
+  PKG to the release. The first build of a new marketing version waits in Beta App Review
+  (hours, per platform) before external testers see it.
 
 This skill publishes that release by driving the `release-manager` subagent (Sonnet —
 see `.claude/agents/release-manager.md`). One-time Apple/secrets setup lives in `plan.md`.
@@ -86,14 +87,18 @@ see `.claude/agents/release-manager.md`). One-time Apple/secrets setup lives in 
    push the fix, and re-create the release. A workflow edit only takes effect on a
    re-created tag: the run executes the workflow from the **tagged commit**, so a plain
    `rerun` reuses the old YAML.
-8. Report: release URL, whether the IPA asset is attached (`gh release view vX.Y.Z`), and
-   the Beta App Review caveat for new versions.
+8. Report: release URL, whether the IPA and PKG assets are both attached
+   (`gh release view vX.Y.Z`), and the Beta App Review caveat for new versions.
 
 ## Known failure modes
 
 - **Archive/export — "Cloud signing permission error" / "No profiles found"**: the App ID
   `com.jonathan859.remsound` and its App Store Connect app record must exist, and the API
   key must be **Admin** (App Manager is refused for cloud signing).
+- **macOS job — upload rejected / app not found**: the shared app record must have the
+  **macOS platform added** (App Store Connect → RemSound → Add Platform → macOS, same
+  bundle id — one-time, see `plan.md` Phase 1 step 6). Both platform jobs are independent:
+  one can succeed while the other fails, so check both before declaring the release done.
 - **Archive — HTTP 401 on `listTeams`**: the API-key secrets don't line up — wrong Key ID /
   Issuer ID, or a mangled `.p8`. Re-set `APP_STORE_CONNECT_API_PRIVATE_KEY` from the file
   via stdin (`gh secret set … < AuthKey_XXXX.p8`); brand-new keys take a few minutes to

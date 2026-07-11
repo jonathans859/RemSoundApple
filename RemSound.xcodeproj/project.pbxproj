@@ -16,6 +16,7 @@
 		AB2000000000000000000002 /* connect.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000001 /* connect.wav */; };
 		AB2000000000000000000003 /* disconnect.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000002 /* disconnect.wav */; };
 		AB2000000000000000000004 /* RemSoundKit in Frameworks */ = {isa = PBXBuildFile; productRef = AC2000000000000000000001 /* RemSoundKit */; };
+		AB2000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AF2000000000000000000003 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +25,8 @@
 		AF1000000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AF2000000000000000000001 /* RemSoundMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemSoundMacApp.swift; sourceTree = "<group>"; };
 		AF2000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AF2000000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AF2000000000000000000004 /* RemSound.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RemSound.entitlements; sourceTree = "<group>"; };
 		AF3000000000000000000001 /* connect.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = connect.wav; sourceTree = "<group>"; };
 		AF3000000000000000000002 /* disconnect.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = disconnect.wav; sourceTree = "<group>"; };
 		AF4000000000000000000001 /* RemSound.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RemSound.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -92,6 +95,8 @@
 			children = (
 				AF2000000000000000000001 /* RemSoundMacApp.swift */,
 				AF2000000000000000000002 /* Info.plist */,
+				AF2000000000000000000003 /* Assets.xcassets */,
+				AF2000000000000000000004 /* RemSound.entitlements */,
 			);
 			path = macOS;
 			sourceTree = "<group>";
@@ -197,6 +202,7 @@
 			files = (
 				AB2000000000000000000002 /* connect.wav in Resources */,
 				AB2000000000000000000003 /* disconnect.wav in Resources */,
+				AB2000000000000000000005 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -315,7 +321,9 @@
 		AD2000000000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_ENTITLEMENTS = Apps/macOS/RemSound.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -329,7 +337,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.jonathan859.remsound.mac;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jonathan859.remsound;
 				PRODUCT_NAME = RemSound;
 				SDKROOT = macosx;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -339,7 +347,9 @@
 		AD2000000000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_ENTITLEMENTS = Apps/macOS/RemSound.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -353,7 +363,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.jonathan859.remsound.mac;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jonathan859.remsound;
 				PRODUCT_NAME = RemSound;
 				SDKROOT = macosx;
 				SWIFT_EMIT_LOC_STRINGS = YES;

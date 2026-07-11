@@ -19,12 +19,13 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 - To check whether the Windows repo changed the protocol since the last review, use the
   `upstream-protocol-sync` skill (`.claude/skills/upstream-protocol-sync/`) — it tracks the
   last-scanned upstream commit and says which files matter.
-- TestFlight: `.github/workflows/testflight.yml` cloud-signs via the App Store Connect
-  API key (Admin; no certificates or profiles anywhere) and uploads on **every push to
-  `main`** (internal testers, automatic distribution, changelog = commit subject) and on
-  **every published GitHub Release `vX.Y.Z`** (external testers too — repo variable
-  `TESTFLIGHT_EXTERNAL_GROUPS`, default "Beta"; notes = "What to Test"; IPA attached to
-  the release). To cut a release use the `release` skill (`.claude/skills/release/`) —
+- TestFlight: `.github/workflows/testflight.yml` cloud-signs **both platforms** (iOS IPA
+  + macOS PKG, parallel jobs, one shared app record) via the App Store Connect API key
+  (Admin; no certificates or profiles anywhere) and uploads on **every push to `main`**
+  (internal testers, automatic distribution, changelog = commit subject) and on **every
+  published GitHub Release `vX.Y.Z`** (external testers too — repo variable
+  `TESTFLIGHT_EXTERNAL_GROUPS`, default "Beta"; notes = "What to Test"; IPA + PKG
+  attached to the release). To cut a release use the `release` skill (`.claude/skills/release/`) —
   it drives the Sonnet `release-manager` subagent (`.claude/agents/release-manager.md`).
   One-time setup steps live in `plan.md`; recurring gotchas (Admin key required for cloud
   signing, the Xcode/iOS 26 SDK floor that keeps the signing job on `macos-26`) are in
@@ -66,8 +67,11 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   selected peer (two paths of one machine would double its sessions). Outbound audio uses
   the receiver's socket. The send toggle is deliberately NOT persisted — the mic never goes
   hot at launch.
-- iOS 18 / macOS 15 minimum; bundle ids `com.jonathan859.remsound` (iOS; renamed from
-  `.ios` 2026-07-03, pre-ship) / `com.jonathan859.remsound.mac` (macOS).
+- iOS 18 / macOS 15 minimum; **one shared bundle id** `com.jonathan859.remsound` for both
+  platforms = one App Store Connect app record, universal purchase (iOS renamed from
+  `.ios` 2026-07-03; macOS renamed from `.mac` 2026-07-11 — both pre-ship). The macOS
+  target is App-Sandboxed (`Apps/macOS/RemSound.entitlements`: network client + server,
+  audio input) — required for Mac App Store/TestFlight; never remove the sandbox.
 - Password in Keychain. Control packets (type 5) parsed and ignored.
 - Opus via SPM `alta/swift-opus` pinned `exact: "0.0.2"` (raw C API needed for the FEC flag).
 - **Screen-reader accessibility is the top priority**: every control labeled, status lines

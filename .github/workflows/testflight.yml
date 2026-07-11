@@ -1,12 +1,18 @@
 name: TestFlight
 
-# Every push to main builds a cloud-signed IPA and uploads it to TestFlight; the internal
-# tester group (set to automatic distribution in App Store Connect) receives it as soon as
-# processing finishes, with the head commit subject as "What to Test". Publishing a GitHub
-# Release (tag vX.Y.Z) additionally sets the release notes as "What to Test", distributes
-# the build to the external tester group(s), and attaches the IPA to the release. The
-# first build of each marketing version goes through Beta App Review before external
-# testers see it — that wait is Apple-side and normal.
+# Every push to main builds a cloud-signed iOS IPA and a cloud-signed macOS PKG and
+# uploads both to TestFlight; the internal tester group (set to automatic distribution in
+# App Store Connect) receives them as soon as processing finishes, with the head commit
+# subject as "What to Test". Publishing a GitHub Release (tag vX.Y.Z) additionally sets
+# the release notes as "What to Test", distributes the builds to the external tester
+# group(s), and attaches the IPA + PKG to the release. The first build of each marketing
+# version goes through Beta App Review before external testers see it — per platform,
+# and that wait is Apple-side and normal.
+#
+# Both platforms share ONE App Store Connect app record (universal purchase): the iOS and
+# macOS targets use the same bundle id com.jonathan859.remsound, and the app record must
+# have the macOS platform added (App Store Connect → RemSound → Add Platform) before the
+# first macOS upload. fastlane pilot disambiguates the platforms via --app_platform.
 #
 # Signing is Apple *cloud signing*: automatic signing + the App Store Connect API key
 # (must be role Admin) via -allowProvisioningUpdates. Apple holds the distribution
@@ -27,8 +33,10 @@ on:
 permissions:
   contents: write # gh release upload
 
-# Serialize uploads: parallel pilot runs against the same app record race App Store
-# Connect processing, and ordered uploads keep TestFlight's build list sensible.
+# Serialize workflow runs: parallel pilot runs against the same app record + platform
+# race App Store Connect processing, and ordered uploads keep TestFlight's build list
+# sensible. The iOS and macOS jobs within one run may overlap — different platforms
+# process independently.
 concurrency:
   group: testflight-upload
   cancel-in-progress: false
@@ -182,3 +190,133 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
         run: gh release upload "$TAG" "${{ steps.version.outputs.ipa }}" --clobber
+
+  testflight-macos:
+    name: Cloud-signed macOS build → TestFlight
+    needs: test
+    # Same image as the iOS job — App Store uploads want the newest Xcode/SDKs, and one
+    # image keeps both signing jobs on the same toolchain.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # build numbers derive from the commit count
+
+      - name: Use the newest installed Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+
+      - name: Derive marketing version and build number
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${TAG#v}"
+            if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Release tag must be vMAJOR.MINOR.PATCH (got '$TAG')"
+              exit 1
+            fi
+            KIND=1
+            PKG="RemSound-macOS-$TAG.pkg"
+          else
+            VERSION=$(sed -n 's/^[[:space:]]*MARKETING_VERSION = \(.*\);$/\1/p' RemSound.xcodeproj/project.pbxproj | head -1)
+            KIND=0
+            PKG="RemSound-macOS-$VERSION-$(git rev-parse --short HEAD).pkg"
+          fi
+          # Same commit-count.kind.attempt scheme as the iOS job. CFBundleVersion
+          # uniqueness is per platform, so the iOS and macOS builds of one commit
+          # deliberately share a build number.
+          BUILD="$(git rev-list --count HEAD).$KIND.${{ github.run_attempt }}"
+          {
+            echo "marketing=$VERSION"
+            echo "build=$BUILD"
+            echo "pkg=$PKG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write App Store Connect API key
+        env:
+          API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s' "$API_PRIVATE_KEY" > "$RUNNER_TEMP/asc/AuthKey.p8"
+          jq -n --arg kid "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
+                --arg iss "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}" \
+                --arg key "$API_PRIVATE_KEY" \
+            '{key_id: $kid, issuer_id: $iss, key: $key, duration: 1200, in_house: false}' \
+            > "$RUNNER_TEMP/asc/api_key.json"
+
+      - name: Archive (cloud signing — Apple signs with its cloud-managed certificate)
+        run: |
+          xcodebuild archive \
+            -project RemSound.xcodeproj \
+            -scheme RemSound-macOS \
+            -destination 'generic/platform=macOS' \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/RemSound.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
+            -authenticationKeyID "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}" \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            MARKETING_VERSION="${{ steps.version.outputs.marketing }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.version.outputs.build }}"
+
+      - name: Export PKG
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>${{ secrets.APPLE_TEAM_ID }}</string>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/RemSound.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
+            -authenticationKeyID "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}"
+          cp "$RUNNER_TEMP"/export/*.pkg "${{ steps.version.outputs.pkg }}"
+
+      - name: Upload to TestFlight (internal testers via automatic distribution)
+        if: github.event_name == 'push'
+        run: |
+          CHANGELOG="$(git log -1 --pretty=%s)"
+          fastlane pilot upload \
+            --app_platform osx \
+            --pkg "${{ steps.version.outputs.pkg }}" \
+            --api_key_path "$RUNNER_TEMP/asc/api_key.json" \
+            --changelog "$CHANGELOG" \
+            --skip_waiting_for_build_processing true
+
+      - name: Upload to TestFlight and distribute to external testers
+        if: github.event_name == 'release'
+        env:
+          RELEASE_NOTES: ${{ github.event.release.body }}
+          EXTERNAL_GROUPS: ${{ vars.TESTFLIGHT_EXTERNAL_GROUPS || 'Beta' }}
+        run: |
+          if [ -z "$RELEASE_NOTES" ]; then
+            echo "::error::Release body is empty — external distribution requires 'What to Test' text"
+            exit 1
+          fi
+          fastlane pilot upload \
+            --app_platform osx \
+            --pkg "${{ steps.version.outputs.pkg }}" \
+            --api_key_path "$RUNNER_TEMP/asc/api_key.json" \
+            --changelog "$RELEASE_NOTES" \
+            --distribute_external true \
+            --groups "$EXTERNAL_GROUPS"
+
+      - name: Attach PKG to the GitHub release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" "${{ steps.version.outputs.pkg }}" --clobber

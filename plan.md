@@ -4,14 +4,15 @@ Goal state (matches how you want to work; revised 2026-07-11 — cloud signing +
 internal TestFlight):
 
 - **Push to any branch** → existing `build.yml` runs tests + unsigned builds. (Already true.)
-- **Push to `main`** → `testflight.yml` builds a **cloud-signed IPA** (Apple holds the
-  distribution key; nothing but the API key in secrets) and uploads it to TestFlight —
-  the **internal** group receives it via automatic distribution, "What to Test" = the
-  head commit subject.
-- **Publish a GitHub Release** (tag `vX.Y.Z` + notes) → same workflow uploads a build with
-  the release notes as "What to Test", **distributes it to the external group(s)**
-  (repo variable `TESTFLIGHT_EXTERNAL_GROUPS`, default "Beta"), and **attaches the IPA to
-  the GitHub release**.
+- **Push to `main`** → `testflight.yml` builds a **cloud-signed iOS IPA and macOS PKG**
+  (Apple holds the distribution key; nothing but the API key in secrets) and uploads both
+  to TestFlight — the **internal** group receives them via automatic distribution,
+  "What to Test" = the head commit subject. (macOS added 2026-07-11: same app record,
+  parallel `testflight-macos` job.)
+- **Publish a GitHub Release** (tag `vX.Y.Z` + notes) → same workflow uploads builds with
+  the release notes as "What to Test", **distributes them to the external group(s)**
+  (repo variable `TESTFLIGHT_EXTERNAL_GROUPS`, default "Beta"), and **attaches the IPA +
+  PKG to the GitHub release**.
 - A `/release` Claude skill drives releases via a Sonnet `release-manager` subagent
   (`.claude/agents/release-manager.md`): it reads the commits since the last tag, drafts
   the notes, bumps the version, and publishes after your confirmation.
@@ -28,11 +29,10 @@ can be tested from this Windows machine — validation is reading the Actions lo
 
 2. **Find your Team ID**: developer.apple.com → Membership details → 10-character Team ID.
 
-3. **Register the App ID** (bundle ID decided 2026-07-03: the iOS app is
-   **`com.jonathan859.remsound`** — no `.ios` suffix; already renamed in the project.
-   macOS stays `com.jonathan859.remsound.mac`; iOS/macOS are separate app records so
-   there is no conflict, and the suffix-free iOS name keeps Mac App Store "universal
-   purchase" possible later, which would require one shared ID).
+3. **Register the App ID** (bundle ID decided 2026-07-03, revised 2026-07-11: **both**
+   platforms now use **`com.jonathan859.remsound`** — the macOS target was renamed from
+   `.mac` pre-ship so iOS and macOS share ONE app record as a universal purchase; the
+   `.mac` App ID, if it was ever registered, is unused).
 
    developer.apple.com → Certificates, Identifiers & Profiles → Identifiers → “+” →
    App IDs → App → **explicit** bundle ID `com.jonathan859.remsound`, description
@@ -57,6 +57,12 @@ can be tested from this Windows machine — validation is reading the Actions lo
 6. **Create the app record**: App Store Connect → Apps → “+” → New App → iOS,
    name "RemSound" (or "RemSound Receiver" if taken), primary language, the bundle ID you
    registered, any SKU (e.g. `remsound-ios`).
+
+   **Add the macOS platform (one-time, added 2026-07-11, required before the first macOS
+   TestFlight upload)**: App Store Connect → the RemSound app → App Store tab → the
+   platform "+" (Add Platform) → **macOS**. Same bundle ID `com.jonathan859.remsound` —
+   that's what makes it a universal purchase under the existing record. TestFlight tester
+   groups are shared; the first macOS build goes through its own Beta App Review.
 
 7. **TestFlight internal group**: in the app → TestFlight → Internal Testing → create a
    group (e.g. "Core") with automatic distribution and add yourself. Internal testers need
