@@ -116,14 +116,14 @@ Removed 2026-07-11 with the switch to cloud signing (delete them from the repo s
    phase with `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`. To rebrand later, just
    replace `AppIcon.appiconset/AppIcon.png` with another 1024×1024 no-alpha PNG.
 
-2. **Export compliance** (verified against Apple's docs 2026-07-03): the plist shortcut
-   `ITSAppUsesNonExemptEncryption = false` is documented for apps whose only encryption
-   is OS-standard protocol use (e.g. HTTPS via URLSession). RemSound does its own
-   end-to-end audio encryption — via Apple's CryptoKit/CommonCrypto, but for a custom
+2. **Export compliance** (verified against Apple's docs 2026-07-03): RemSound does its
+   own end-to-end audio encryption — via Apple's CryptoKit/CommonCrypto, but for a custom
    protocol — so the honest declaration is: **uses encryption: yes; only standard
-   algorithms (no proprietary crypto): yes**. Practical setup:
-   - Answer the encryption questions **once at app level** in App Store Connect (App
-     Information → App Encryption Documentation) so builds don't prompt individually.
+   algorithms (no proprietary crypto): yes**, which is exempt from export documentation.
+   Since 2026-07-11 both Info.plists carry `ITSAppUsesNonExemptEncryption = false`, so
+   builds on **both platforms** never prompt in App Store Connect (adding the macOS
+   platform had re-surfaced the per-build question — the app-level ASC answers from
+   2026-07-03 covered iOS only). Still applies regardless of the plist key:
    - File the annual **BIS self-classification report** (due Feb 1 each year — a short
      spreadsheet email; mass-market standard-crypto apps qualify for this simple route).
    - France requires an extra declaration if you distribute there.

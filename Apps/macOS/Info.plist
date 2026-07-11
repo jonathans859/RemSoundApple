@@ -20,6 +20,13 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- Export compliance, answered in the binary so App Store Connect never asks per
+	     build: RemSound uses only standard algorithms (AES-GCM / PBKDF2 via Apple's
+	     CryptoKit + CommonCrypto), which are exempt from export documentation. Matches the
+	     app-level declaration in ASC; the annual BIS self-classification report still
+	     applies (see plan.md). -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
