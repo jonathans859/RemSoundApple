@@ -58,6 +58,22 @@ public final class ReceiverController {
     /// Saved configuration snapshots (Profiles tab). Mutated only through the profile
     /// methods below, which keep `ProfileStore` in sync.
     public private(set) var profiles: [ReceiverProfile] = []
+    /// The profile the settings last came from (applied, saved, or updated) — the
+    /// candidate for the "currently applied" marker. `appliedProfile` re-checks it
+    /// against the live configuration, so the marker drops the moment settings drift.
+    public private(set) var lastAppliedProfileId: UUID?
+
+    /// The profile the current configuration exactly matches, if any — drives the
+    /// "Currently applied" row marker and the Profiles tab's accessibility value.
+    /// Drift-checked: apply "Home", then change any profile-covered setting, and Home
+    /// stops reading as applied.
+    public var appliedProfile: ReceiverProfile? {
+        guard let id = lastAppliedProfileId,
+              let profile = profiles.first(where: { $0.id == id }),
+              profileSnapshot(id: profile.id, name: profile.name) == profile,
+              profileStore.password(forProfile: profile.id) == password else { return nil }
+        return profile
+    }
 
     /// Microphone sending on/off — persisted like the receive toggle (user decision
     /// 2026-07-12: the old "never persist send" rule is retired). Sending saved as on
@@ -221,6 +237,8 @@ public final class ReceiverController {
         selectedAddresses = settings.selectedPeerAddresses
         profiles = profileStore.profiles
         startupProfile = settings.startupProfile
+        // After the overlay above, so a startup profile reads as applied right away.
+        lastAppliedProfileId = settings.lastAppliedProfileId
         volume = settings.volume
         targetLatencyMs = settings.targetLatencyMs
         cuesEnabled = settings.cuesEnabled
@@ -434,6 +452,7 @@ public final class ReceiverController {
         profiles.append(profile)
         profileStore.setPassword(password, forProfile: profile.id)
         profileStore.profiles = profiles
+        markApplied(profile.id) // the saved profile IS the current configuration
         announce("Profile \(trimmed) saved")
     }
 
@@ -443,6 +462,7 @@ public final class ReceiverController {
         profiles[index] = profileSnapshot(id: id, name: profiles[index].name)
         profileStore.setPassword(password, forProfile: id)
         profileStore.profiles = profiles
+        markApplied(id) // now identical to the current configuration
         announce("Profile \(profiles[index].name) updated")
     }
 
@@ -462,6 +482,7 @@ public final class ReceiverController {
         // Drop dangling launch references so the picker never shows a deleted profile.
         if startupProfile == .fixed(id) { startupProfile = .off }
         if settings.lastAppliedProfileId == id { settings.lastAppliedProfileId = nil }
+        if lastAppliedProfileId == id { lastAppliedProfileId = nil }
         announce("Profile \(name) deleted")
     }
 
@@ -485,11 +506,18 @@ public final class ReceiverController {
         // Applying a profile is an explicit user tap, so a profile with sending on turning
         // the mic on here does not break the "mic never goes hot at launch" rule.
         sendEnabled = profile.sendEnabled
-        settings.lastAppliedProfileId = profile.id // feeds the "last applied" launch mode
+        markApplied(profile.id)
         applyPeerSelection()
         resolveManualPeers()
         refreshNow()
         announce("Profile \(profile.name) applied")
+    }
+
+    /// Record which profile the settings now come from — persisted (feeds the
+    /// "last applied" launch mode) and published (feeds the applied marker).
+    private func markApplied(_ id: UUID) {
+        settings.lastAppliedProfileId = id
+        lastAppliedProfileId = id
     }
 
     private func profileSnapshot(id: UUID, name: String) -> ReceiverProfile {

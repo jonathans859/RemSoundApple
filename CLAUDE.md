@@ -164,9 +164,11 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a four-tab
   `TabView`: **Connectivity** = status/peers/add-peer (its tab bar item exposes the live
   traffic rates as its accessibility value, `controller.trafficSummary`), **Send &
-  Receive** = receive toggle/mic send/password, **Profiles** = saved snapshots
-  (apply = row tap; update/rename/delete = context menu + swipe), **Audio** = playback
-  options; a persistent
+  Receive** = receive toggle/mic send/password, **Audio** = playback options,
+  **Profiles** = saved snapshots (apply = row tap; update/rename/delete = context menu +
+  swipe; the drift-checked `controller.appliedProfile` drives a "Currently applied" row
+  marker and the tab bar item's accessibility value — marker only while the live config
+  exactly matches the snapshot); a persistent
   top-right About button opens `AboutView.swift`, which links to this repo and the
   official Windows repo), `Settings.swift` (UserDefaults + Keychain).
 - `Apps/iOS`, `Apps/macOS`: thin entry points. iOS has the `audio` background mode; macOS

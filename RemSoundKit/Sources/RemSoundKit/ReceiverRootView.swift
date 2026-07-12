@@ -20,8 +20,8 @@ public struct ReceiverRootView: View {
     public var body: some View {
         // NavigationStack owns the title and the persistent About button (top-right on both
         // platforms); the TabView splits the controls into a Connectivity tab (status, peers,
-        // add peer), a Send & Receive tab (receive/send toggles, microphone, password), a
-        // Profiles tab (saved configuration snapshots), and an Audio tab (playback options).
+        // add peer), a Send & Receive tab (receive/send toggles, microphone, password), an
+        // Audio tab (playback options), and a Profiles tab (saved configuration snapshots).
         // There is no push navigation, so nesting the TabView inside the stack keeps one
         // toolbar across tabs.
         NavigationStack {
@@ -39,9 +39,6 @@ public struct ReceiverRootView: View {
                 Tab("Send & Receive", systemImage: "arrow.up.arrow.down") {
                     sendReceiveTab
                 }
-                Tab("Profiles", systemImage: "bookmark") {
-                    profilesTab
-                }
 #if os(iOS)
                 Tab("Audio", systemImage: "speaker.wave.2.fill") {
                     audioTab
@@ -54,6 +51,10 @@ public struct ReceiverRootView: View {
                 }
                 .accessibilityValue("Muted", isEnabled: controller.isMuted)
 #endif
+                Tab("Profiles", systemImage: "bookmark") {
+                    profilesTab
+                }
+                .accessibilityValue(appliedProfileTabValue, isEnabled: !appliedProfileTabValue.isEmpty)
             }
 #if os(macOS)
             // The automatic macOS 15 style hoists the tabs into the window toolbar, where
@@ -117,6 +118,12 @@ public struct ReceiverRootView: View {
         .formStyle(.grouped)
     }
 
+    /// Spoken on the Profiles tab bar item (like Connectivity's traffic rates and Audio's
+    /// "Muted"): which profile the current settings match, without opening the tab.
+    private var appliedProfileTabValue: String {
+        controller.appliedProfile.map { "\($0.name) applied" } ?? ""
+    }
+
     private var profilesTab: some View {
         Form {
             profileListSection
@@ -155,23 +162,29 @@ public struct ReceiverRootView: View {
         } header: {
             Text("Saved profiles")
         } footer: {
-            Text("Applying a profile replaces the peer list and selection, password, receive and send switches, microphone, and maximum delay. Volume and the other audio options are not touched.")
+            Text("Applying a profile replaces the peer list and selection, password, receive and send switches, microphone, and maximum delay. Volume and the other audio options are not touched. The profile your current settings match is marked as currently applied; changing any of its settings removes the mark.")
         }
     }
 
     @ViewBuilder
     private func profileRow(_ profile: ReceiverProfile) -> some View {
+        let isApplied = controller.appliedProfile?.id == profile.id
         Button {
             controller.applyProfile(id: profile.id)
         } label: {
             VStack(alignment: .leading) {
                 Text(profile.name)
+                if isApplied {
+                    Text("Currently applied")
+                        .font(.caption)
+                        .foregroundStyle(.tint)
+                }
                 Text(profileSummary(profile))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
-        .accessibilityLabel("\(profile.name), \(profileSummary(profile))")
+        .accessibilityLabel("\(profile.name), \(isApplied ? "currently applied, " : "")\(profileSummary(profile))")
         .accessibilityHint("Double tap to apply this profile. Updating, renaming, and deleting are in the context menu.")
         .contextMenu {
             Button("Save current settings to this profile") {
