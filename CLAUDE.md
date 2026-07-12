@@ -144,10 +144,12 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   discovery on either platform, even via `AppIntentsPackage` forwarding — burned a full
   day on this 2026-07-11/12; the parameterless toggles exist because App Shortcuts can't
   pre-fill a Bool. No entitlements or ASC setup involved),
-  `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a two-tab
-  `TabView`: **Connectivity** = status/peers/add-peer/send/password, **Audio** = playback
-  options; a persistent top-right About button opens `AboutView.swift`, which links to this
-  repo and the official Windows repo), `Settings.swift` (UserDefaults + Keychain).
+  `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a three-tab
+  `TabView`: **Connectivity** = status/peers/add-peer (its tab bar item exposes the live
+  traffic rates as its accessibility value, `controller.trafficSummary`), **Send &
+  Receive** = receive toggle/mic send/password, **Audio** = playback options; a persistent
+  top-right About button opens `AboutView.swift`, which links to this repo and the
+  official Windows repo), `Settings.swift` (UserDefaults + Keychain).
 - `Apps/iOS`, `Apps/macOS`: thin entry points. iOS has the `audio` background mode; macOS
   is a `MenuBarExtra` (LSUIElement) whose **label view's `.task`** is the launch hook. The
   status item is a real menu — Show RemSound (W), Enable sending (S), Enable receiving (R),

@@ -15,18 +15,24 @@ public struct ReceiverRootView: View {
 
     public var body: some View {
         // NavigationStack owns the title and the persistent About button (top-right on both
-        // platforms); the TabView splits the controls into a Connectivity tab (peers, links,
-        // sending, password) and an Audio tab (receiving playback options). There is no push
-        // navigation, so nesting the TabView inside the stack keeps one toolbar across tabs.
+        // platforms); the TabView splits the controls into a Connectivity tab (status, peers,
+        // add peer), a Send & Receive tab (receive/send toggles, microphone, password), and
+        // an Audio tab (playback options). There is no push navigation, so nesting the
+        // TabView inside the stack keeps one toolbar across tabs.
         NavigationStack {
-            // The Tab API (not .tabItem) so the Audio tab bar item itself exposes the mute
-            // state as its accessibility value. SwiftUI offers no way to attach a custom
-            // VoiceOver action to a native tab bar item (TabContent has label/value/hint
-            // only), so quick mute is the magic tap below instead — the hint on the Audio
-            // tab teaches the gesture.
+            // The Tab API (not .tabItem) so tab bar items themselves expose live state as
+            // their accessibility value: Connectivity reads the traffic rates, Audio reads
+            // "Muted". SwiftUI offers no way to attach a custom VoiceOver action to a
+            // native tab bar item (TabContent has label/value/hint only), so quick mute is
+            // the magic tap below instead — the hint on the Audio tab teaches the gesture.
             TabView {
                 Tab("Connectivity", systemImage: "network") {
                     connectivityTab
+                }
+                .accessibilityValue(controller.trafficSummary,
+                                    isEnabled: !controller.trafficSummary.isEmpty)
+                Tab("Send & Receive", systemImage: "arrow.up.arrow.down") {
+                    sendReceiveTab
                 }
 #if os(iOS)
                 Tab("Audio", systemImage: "speaker.wave.2.fill") {
@@ -76,6 +82,13 @@ public struct ReceiverRootView: View {
             connectionSection
             peersSection
             addPeerSection
+        }
+        .formStyle(.grouped)
+    }
+
+    private var sendReceiveTab: some View {
+        Form {
+            receiveSection
             sendSection
             securitySection
         }
@@ -111,11 +124,6 @@ public struct ReceiverRootView: View {
                 .accessibilityLabel("Status: \(controller.statusSummary)")
                 .accessibilityAddTraits(.updatesFrequently)
 
-            Toggle(isOn: $controller.receiveEnabled) {
-                Text("Receive audio")
-            }
-            .accessibilityHint("Plays audio from RemSound senders. Turning this off keeps peers connected and sending available.")
-
             if let error = controller.lastError {
                 Text(error)
                     .foregroundStyle(.red)
@@ -123,6 +131,19 @@ public struct ReceiverRootView: View {
             }
         } header: {
             Text("Status")
+        }
+    }
+
+    private var receiveSection: some View {
+        Section {
+            Toggle(isOn: $controller.receiveEnabled) {
+                Text("Receive audio")
+            }
+            .accessibilityHint("Plays audio from RemSound senders. Turning this off keeps peers connected and sending available.")
+        } header: {
+            Text("Receive")
+        } footer: {
+            Text("Receiving and sending are independent — either can be on without the other.")
         }
     }
 
@@ -238,7 +259,7 @@ public struct ReceiverRootView: View {
     private var sendSection: some View {
         Section {
             Toggle("Send microphone", isOn: $controller.sendEnabled)
-                .accessibilityHint("Streams this device's microphone, encrypted, to the peers you have selected above")
+                .accessibilityHint("Streams this device's microphone, encrypted, to the peers selected on the Connectivity tab")
 
             Picker("Microphone", selection: $controller.selectedMicrophoneId) {
                 Text("System default").tag(String?.none)
@@ -266,7 +287,7 @@ public struct ReceiverRootView: View {
         } header: {
             Text("Send")
         } footer: {
-            Text("Audio goes to the peers you have ticked above; they must also allow this device in their RemSound app. Using Bluetooth headphones' microphone lowers their playback quality while sending.")
+            Text("Audio goes to the peers you have ticked on the Connectivity tab; they must also allow this device in their RemSound app. Using Bluetooth headphones' microphone lowers their playback quality while sending.")
         }
     }
 

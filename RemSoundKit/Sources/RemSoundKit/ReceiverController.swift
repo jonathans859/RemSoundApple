@@ -51,6 +51,10 @@ public final class ReceiverController {
     public private(set) var availableMicrophones: [AudioInputDevice] = []
     /// Plain-sentence state of the send path ("Sending microphone audio to 1 peer").
     public private(set) var sendStatus = ""
+    /// Live traffic rates as one spoken sentence — the Connectivity tab bar item exposes
+    /// this as its accessibility value (like the Audio tab's "Muted"), so VoiceOver users
+    /// hear the rates without opening the tab. Same 1 Hz tick as `connectionDetails`.
+    public private(set) var trafficSummary = ""
 
     /// Microphone sending on/off. Deliberately NOT persisted — the microphone never goes
     /// hot just because the app launched; the user flips it each session. Independent of
@@ -290,6 +294,7 @@ public final class ReceiverController {
         peerConnectedState = [:] // cleared silently — the stop toggle is its own feedback
         statusSummary = "Stopped"
         connectionDetails = []
+        trafficSummary = ""
         refreshPeerList()
     }
 
@@ -453,6 +458,7 @@ public final class ReceiverController {
         guard isRunning else {
             refreshPeerList()
             connectionDetails = []
+            trafficSummary = ""
             return
         }
         retryUnresolvedPeersIfNeeded()
@@ -622,6 +628,9 @@ public final class ReceiverController {
             lastRateDate = now
         }
         lines.append(String(format: "Receiving %.1f kB/s; sending %.1f kB/s", lastRxRateKBs, lastTxRateKBs))
+        // Whole numbers for the spoken tab value — decimals are noise read aloud.
+        trafficSummary = String(format: "Receiving %.0f kilobytes per second, sending %.0f kilobytes per second",
+                                lastRxRateKBs, lastTxRateKBs)
         lines.append(String(format: "Total received %.1f MB; sent %.1f MB",
                             Double(received) / 1_000_000, Double(sent) / 1_000_000))
 
