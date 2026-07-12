@@ -136,11 +136,13 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
     3 s OR healthy heartbeat; lost = no audio AND heartbeat unreachable ~5 s; in between
     holds state) — a bare audio-window check fires false disconnect+connect pairs on
     2-second Wi-Fi/VPN stalls (`ReceiverController.updateCues`).
-11. SwiftUI `.swipeActions` and `.contextMenu` are NOT reliably exposed to VoiceOver
-    (macOS especially: swipe actions not at all). Any row operation offered there must
-    ALSO be an `.accessibilityAction(named:)` on the element VoiceOver focuses — see the
-    peer and profile rows in `ReceiverRootView`. Never ship a row action that exists
-    only as swipe/context menu.
+11. Row operations vs VoiceOver: `.contextMenu` is NOT reliably exposed to VoiceOver
+    (macOS especially), so every row operation must ALSO be an explicit
+    `.accessibilityAction(named:)` on the element VoiceOver focuses. `.swipeActions`,
+    however, ARE auto-exposed as VO custom actions on iOS — combining them with explicit
+    actions reads as doubled actions (user-reported). The pattern is therefore: explicit
+    accessibility actions + context menu, NO swipeActions — see the peer and profile
+    rows in `ReceiverRootView`.
 
 ## Architecture (everything shared lives in `RemSoundKit/Sources/RemSoundKit/`)
 
@@ -171,7 +173,7 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   traffic rates as its accessibility value, `controller.trafficSummary`), **Send &
   Receive** = receive toggle/mic send/password, **Audio** = playback options,
   **Profiles** = saved snapshots (apply = row tap; update/rename/delete = context menu +
-  swipe; the drift-checked `controller.appliedProfile` drives a "Currently applied" row
+  VoiceOver actions, no swipe — pitfall 11; the drift-checked `controller.appliedProfile` drives a "Currently applied" row
   marker and the tab bar item's accessibility value — marker only while the live config
   exactly matches the snapshot); a persistent
   top-right About button opens `AboutView.swift`, which links to this repo and the

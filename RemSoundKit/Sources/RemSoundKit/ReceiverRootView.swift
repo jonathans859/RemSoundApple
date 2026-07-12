@@ -186,8 +186,9 @@ public struct ReceiverRootView: View {
         }
         .accessibilityLabel("\(profile.name), \(isApplied ? "currently applied, " : "")\(profileSummary(profile))")
         .accessibilityHint("Double tap to apply this profile. Updating, renaming, and deleting are available as actions.")
-        // Same VoiceOver rule as the peer rows: the context menu and swipe below are
-        // not reliably reachable with VoiceOver, so each operation is a custom action.
+        // Same VoiceOver rule as the peer rows: the context menu below is not reliably
+        // reachable with VoiceOver, so each operation is a custom action — and no
+        // .swipeActions, which iOS VoiceOver would expose as duplicate actions.
         .accessibilityAction(named: "Save current settings to this profile") {
             controller.updateProfile(id: profile.id)
         }
@@ -207,11 +208,6 @@ public struct ReceiverRootView: View {
                 renamingProfileId = profile.id
             }
             Button("Delete profile", role: .destructive) {
-                controller.deleteProfile(id: profile.id)
-            }
-        }
-        .swipeActions(edge: .trailing) {
-            Button("Delete", role: .destructive) {
                 controller.deleteProfile(id: profile.id)
             }
         }
@@ -339,10 +335,11 @@ public struct ReceiverRootView: View {
 
     @ViewBuilder
     private func peerRow(_ peer: PeerListEntry) -> some View {
-        // Swipe actions and context menus are pointer/touch conveniences only: SwiftUI
-        // does not reliably surface either to VoiceOver (on macOS swipe actions not at
-        // all), so every row operation must ALSO be an explicit custom accessibility
-        // action on the element VoiceOver focuses — the toggle.
+        // Context menus are a pointer/touch convenience: VoiceOver cannot reliably reach
+        // them (macOS especially), so every row operation is ALSO an explicit custom
+        // accessibility action on the element VoiceOver focuses — the toggle.
+        // Deliberately NO .swipeActions: iOS VoiceOver auto-exposes those as custom
+        // actions, which doubled up with the explicit ones.
         let toggle = Toggle(isOn: Binding(
             get: { peer.isSelected },
             set: { controller.setPeerSelected(peer, selected: $0) }
@@ -371,13 +368,6 @@ public struct ReceiverRootView: View {
         .contextMenu {
             if let manualId = peer.manualPeerId {
                 Button("Remove peer", role: .destructive) {
-                    controller.removeManualPeer(id: manualId)
-                }
-            }
-        }
-        .swipeActions(edge: .trailing) {
-            if let manualId = peer.manualPeerId {
-                Button("Remove", role: .destructive) {
                     controller.removeManualPeer(id: manualId)
                 }
             }
