@@ -155,7 +155,12 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   status item is a real menu — Show RemSound (W), Enable sending (S), Enable receiving (R),
   Exit RemSound (X), bare-letter key equivalents — and the full UI is a `Window` scene
   (id "main") with `.defaultLaunchBehavior(.suppressed)` so launch stays silent; opening
-  it must also `NSApp.activate()` or the window appears behind the frontmost app.
+  it must also `NSApp.activate()` or the window appears behind the frontmost app, and the
+  window's onAppear/onDisappear flip the activation policy `.regular`/`.accessory` — an
+  accessory app is invisible to Cmd-Tab, so without the flip the open window is
+  unreachable after switching away. The shared TabView needs `.tabViewStyle(.grouped)` on
+  macOS: the automatic style puts tabs in the toolbar, where they collapse into an
+  overflow pulldown next to the title + About button.
 
 Known v1 simplifications (intentional): linear resampler for non-48k PCM senders, no drift
 resampler (upstream v3.9.1 also added buffer-depth feedback to theirs — port both together

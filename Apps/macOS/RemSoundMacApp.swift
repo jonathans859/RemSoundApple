@@ -33,9 +33,20 @@ struct RemSoundMacApp: App {
 
         Window("RemSound", id: "main") {
             ReceiverRootView(controller: controller)
-                .frame(minWidth: 400, minHeight: 500)
+                .frame(minWidth: 480, minHeight: 500)
+                // An accessory (LSUIElement) app never appears in the Dock or the Cmd-Tab
+                // switcher, so an open window becomes unreachable the moment the user
+                // switches away. Be a regular app while the window exists, an accessory
+                // again once it closes (onDisappear fires on close, not on minimize).
+                .onAppear {
+                    NSApp.setActivationPolicy(.regular)
+                    NSApp.activate()
+                }
+                .onDisappear {
+                    NSApp.setActivationPolicy(.accessory)
+                }
         }
-        .defaultSize(width: 400, height: 600)
+        .defaultSize(width: 480, height: 600)
         // A Window scene would otherwise open itself on first launch — this app must
         // start as a bare menu bar item, so both launch and restoration stay silent.
         .defaultLaunchBehavior(.suppressed)

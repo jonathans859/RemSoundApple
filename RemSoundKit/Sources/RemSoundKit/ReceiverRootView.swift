@@ -47,6 +47,13 @@ public struct ReceiverRootView: View {
                 .accessibilityValue("Muted", isEnabled: controller.isMuted)
 #endif
             }
+#if os(macOS)
+            // The automatic macOS 15 style hoists the tabs into the window toolbar, where
+            // the navigation title + About button leave too little room and the tabs
+            // collapse into an overflow pulldown menu. Grouped keeps them as always-visible
+            // segmented tabs above the content.
+            .tabViewStyle(.grouped)
+#endif
             .navigationTitle("RemSound")
 #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
