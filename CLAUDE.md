@@ -63,7 +63,15 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 
 ## Locked product decisions (do not revisit)
 
-- v3.x protocol only; no legacy, no relay-v2 lobby, no recording, no profiles.
+- v3.x protocol only; no legacy, no relay-v2 lobby, no recording.
+- Profiles (2026-07-12, user reversed the earlier "no profiles" decision): local named
+  snapshots of peers + selection, password, receive/send toggles, microphone, max delay —
+  `Profiles.swift` (`ReceiverProfile` + `ProfileStore`), applied via
+  `ReceiverController.applyProfile`. JSON in UserDefaults; each profile's password is its
+  own Keychain item (`profile-password-<uuid>`), never in the JSON
+  (`ProfileTests.testEncodedProfileJsonNeverContainsAPassword`). NOT the Windows profile
+  file format — local only. Applying a profile with sending on DOES start the mic; that's
+  an explicit user tap, so it doesn't break the mic-never-hot-at-launch rule.
 - Mic send: Opus-only, one mixed lane, 48 kHz stereo 192 kbps (RESTRICTED_LOWDELAY,
   complexity 10, VBR, FEC, 10 % loss bias) — mirrors the Windows sender. One endpoint per
   selected peer (two paths of one machine would double its sessions). Outbound audio uses
@@ -144,10 +152,12 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   discovery on either platform, even via `AppIntentsPackage` forwarding — burned a full
   day on this 2026-07-11/12; the parameterless toggles exist because App Shortcuts can't
   pre-fill a Bool. No entitlements or ASC setup involved),
-  `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a three-tab
+  `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a four-tab
   `TabView`: **Connectivity** = status/peers/add-peer (its tab bar item exposes the live
   traffic rates as its accessibility value, `controller.trafficSummary`), **Send &
-  Receive** = receive toggle/mic send/password, **Audio** = playback options; a persistent
+  Receive** = receive toggle/mic send/password, **Profiles** = saved snapshots
+  (apply = row tap; update/rename/delete = context menu + swipe), **Audio** = playback
+  options; a persistent
   top-right About button opens `AboutView.swift`, which links to this repo and the
   official Windows repo), `Settings.swift` (UserDefaults + Keychain).
 - `Apps/iOS`, `Apps/macOS`: thin entry points. iOS has the `audio` background mode; macOS

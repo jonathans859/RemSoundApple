@@ -55,6 +55,9 @@ public final class ReceiverController {
     /// this as its accessibility value (like the Audio tab's "Muted"), so VoiceOver users
     /// hear the rates without opening the tab. Same 1 Hz tick as `connectionDetails`.
     public private(set) var trafficSummary = ""
+    /// Saved configuration snapshots (Profiles tab). Mutated only through the profile
+    /// methods below, which keep `ProfileStore` in sync.
+    public private(set) var profiles: [ReceiverProfile] = []
 
     /// Microphone sending on/off. Deliberately NOT persisted — the microphone never goes
     /// hot just because the app launched; the user flips it each session. Independent of
@@ -149,6 +152,7 @@ public final class ReceiverController {
 
     // Services
     private let settings = ReceiverSettings()
+    private let profileStore = ProfileStore()
     private let engine = AudioReceiverEngine()
     private let output: AudioOutput
     private let discovery = PeerDiscoveryService()
@@ -193,6 +197,7 @@ public final class ReceiverController {
     public init() {
         manualPeers = settings.manualPeers
         selectedAddresses = settings.selectedPeerAddresses
+        profiles = profileStore.profiles
         volume = settings.volume
         targetLatencyMs = settings.targetLatencyMs
         cuesEnabled = settings.cuesEnabled
@@ -377,6 +382,88 @@ public final class ReceiverController {
         settings.selectedPeerAddresses = selectedAddresses
         applyPeerSelection()
         refreshNow()
+    }
+
+    // MARK: - Profiles
+
+    /// Save the current configuration under `name`. A name matching an existing profile
+    /// (case-insensitive) updates that profile in place — that's the edit path, alongside
+    /// the row's explicit "save current settings here" action.
+    public func saveProfile(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        if let existing = profiles.first(where: { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            updateProfile(id: existing.id)
+            return
+        }
+        let profile = profileSnapshot(id: UUID(), name: trimmed)
+        profiles.append(profile)
+        profileStore.setPassword(password, forProfile: profile.id)
+        profileStore.profiles = profiles
+        announce("Profile \(trimmed) saved")
+    }
+
+    /// Overwrite an existing profile with the current configuration, keeping its name.
+    public func updateProfile(id: UUID) {
+        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+        profiles[index] = profileSnapshot(id: id, name: profiles[index].name)
+        profileStore.setPassword(password, forProfile: id)
+        profileStore.profiles = profiles
+        announce("Profile \(profiles[index].name) updated")
+    }
+
+    public func renameProfile(id: UUID, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+        profiles[index].name = trimmed
+        profileStore.profiles = profiles
+    }
+
+    public func deleteProfile(id: UUID) {
+        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+        let name = profiles[index].name
+        profileStore.setPassword("", forProfile: id) // removes the Keychain item
+        profiles.remove(at: index)
+        profileStore.profiles = profiles
+        announce("Profile \(name) deleted")
+    }
+
+    /// Replace the live configuration with a saved profile. Only the profile's fields are
+    /// touched — volume, cues, exclusive audio, and the rest stay as they are.
+    public func applyProfile(id: UUID) {
+        guard let profile = profiles.first(where: { $0.id == id }) else { return }
+        manualPeers = profile.manualPeers
+        settings.manualPeers = manualPeers
+        // Keep resolutions for peers that survive the swap (matched by id); drop the rest.
+        let ids = Set(manualPeers.map(\.id))
+        manualResolved = manualResolved.filter { ids.contains($0.key) }
+        selectedAddresses = Set(profile.selectedPeerAddresses)
+        settings.selectedPeerAddresses = selectedAddresses
+        targetLatencyMs = profile.targetLatencyMs
+        selectedMicrophoneId = profile.selectedMicrophoneId
+        password = profileStore.password(forProfile: profile.id)
+        receiveEnabled = profile.receiveEnabled
+        // Send last: it may start the capture pipeline (microphone permission prompt
+        // included), and by now the key material and peer selection it needs are in place.
+        // Applying a profile is an explicit user tap, so a profile with sending on turning
+        // the mic on here does not break the "mic never goes hot at launch" rule.
+        sendEnabled = profile.sendEnabled
+        applyPeerSelection()
+        resolveManualPeers()
+        refreshNow()
+        announce("Profile \(profile.name) applied")
+    }
+
+    private func profileSnapshot(id: UUID, name: String) -> ReceiverProfile {
+        ReceiverProfile(
+            id: id,
+            name: name,
+            manualPeers: manualPeers,
+            selectedPeerAddresses: Array(selectedAddresses).sorted(),
+            receiveEnabled: receiveEnabled,
+            sendEnabled: sendEnabled,
+            selectedMicrophoneId: selectedMicrophoneId,
+            targetLatencyMs: targetLatencyMs)
     }
 
     private func resolveManualPeers() {

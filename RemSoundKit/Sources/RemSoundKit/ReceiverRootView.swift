@@ -8,6 +8,10 @@ public struct ReceiverRootView: View {
     @State private var newPeerHost = ""
     @FocusState private var addPeerFocused: Bool
     @State private var showingAbout = false
+    @State private var newProfileName = ""
+    @FocusState private var profileNameFocused: Bool
+    @State private var renamingProfileId: UUID?
+    @State private var renameText = ""
 
     public init(controller: ReceiverController) {
         self.controller = controller
@@ -16,9 +20,10 @@ public struct ReceiverRootView: View {
     public var body: some View {
         // NavigationStack owns the title and the persistent About button (top-right on both
         // platforms); the TabView splits the controls into a Connectivity tab (status, peers,
-        // add peer), a Send & Receive tab (receive/send toggles, microphone, password), and
-        // an Audio tab (playback options). There is no push navigation, so nesting the
-        // TabView inside the stack keeps one toolbar across tabs.
+        // add peer), a Send & Receive tab (receive/send toggles, microphone, password), a
+        // Profiles tab (saved configuration snapshots), and an Audio tab (playback options).
+        // There is no push navigation, so nesting the TabView inside the stack keeps one
+        // toolbar across tabs.
         NavigationStack {
             // The Tab API (not .tabItem) so tab bar items themselves expose live state as
             // their accessibility value: Connectivity reads the traffic rates, Audio reads
@@ -33,6 +38,9 @@ public struct ReceiverRootView: View {
                                     isEnabled: !controller.trafficSummary.isEmpty)
                 Tab("Send & Receive", systemImage: "arrow.up.arrow.down") {
                     sendReceiveTab
+                }
+                Tab("Profiles", systemImage: "bookmark") {
+                    profilesTab
                 }
 #if os(iOS)
                 Tab("Audio", systemImage: "speaker.wave.2.fill") {
@@ -107,6 +115,119 @@ public struct ReceiverRootView: View {
             audioSection
         }
         .formStyle(.grouped)
+    }
+
+    private var profilesTab: some View {
+        Form {
+            profileListSection
+            saveProfileSection
+        }
+        .formStyle(.grouped)
+        // One shared rename prompt for whichever row triggered it (alerts inside ForEach
+        // rows misfire on macOS when the row disappears under an open context menu).
+        .alert("Rename profile", isPresented: Binding(
+            get: { renamingProfileId != nil },
+            set: { if !$0 { renamingProfileId = nil } }
+        )) {
+            TextField("Profile name", text: $renameText)
+            Button("Rename") {
+                if let id = renamingProfileId {
+                    controller.renameProfile(id: id, to: renameText)
+                }
+                renamingProfileId = nil
+            }
+            Button("Cancel", role: .cancel) {
+                renamingProfileId = nil
+            }
+        }
+    }
+
+    private var profileListSection: some View {
+        Section {
+            if controller.profiles.isEmpty {
+                Text("No profiles yet. Set up peers, password, and toggles the way you like, then save the setup below.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(controller.profiles) { profile in
+                profileRow(profile)
+            }
+        } header: {
+            Text("Saved profiles")
+        } footer: {
+            Text("Applying a profile replaces the peer list and selection, password, receive and send switches, microphone, and maximum delay. Volume and the other audio options are not touched.")
+        }
+    }
+
+    @ViewBuilder
+    private func profileRow(_ profile: ReceiverProfile) -> some View {
+        Button {
+            controller.applyProfile(id: profile.id)
+        } label: {
+            VStack(alignment: .leading) {
+                Text(profile.name)
+                Text(profileSummary(profile))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityLabel("\(profile.name), \(profileSummary(profile))")
+        .accessibilityHint("Double tap to apply this profile. Updating, renaming, and deleting are in the context menu.")
+        .contextMenu {
+            Button("Save current settings to this profile") {
+                controller.updateProfile(id: profile.id)
+            }
+            Button("Rename…") {
+                renameText = profile.name
+                renamingProfileId = profile.id
+            }
+            Button("Delete profile", role: .destructive) {
+                controller.deleteProfile(id: profile.id)
+            }
+        }
+        .swipeActions(edge: .trailing) {
+            Button("Delete", role: .destructive) {
+                controller.deleteProfile(id: profile.id)
+            }
+        }
+    }
+
+    /// Plain-sentence row detail, doubling as the VoiceOver value — mirrors what applying
+    /// the profile will do without opening it.
+    private func profileSummary(_ profile: ReceiverProfile) -> String {
+        var parts: [String] = []
+        parts.append("receive \(profile.receiveEnabled ? "on" : "off")")
+        parts.append("send \(profile.sendEnabled ? "on" : "off")")
+        let peerCount = profile.manualPeers.count
+        if peerCount > 0 {
+            parts.append("\(peerCount) saved peer\(peerCount == 1 ? "" : "s")")
+        }
+        parts.append("\(profile.targetLatencyMs) ms delay")
+        return parts.joined(separator: ", ")
+    }
+
+    private var saveProfileSection: some View {
+        Section {
+            HStack {
+                TextField("Profile name", text: $newProfileName)
+                    .focused($profileNameFocused)
+                    .onSubmit(saveProfile)
+                    .accessibilityHint("Name for the saved configuration. Using an existing profile's name updates that profile.")
+                Button("Save", action: saveProfile)
+                    .disabled(newProfileName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        } header: {
+            Text("Save current configuration")
+        } footer: {
+            Text("Saves the peers, password, receive and send switches, microphone, and maximum delay as they are right now. Using an existing profile's name updates that profile.")
+        }
+    }
+
+    private func saveProfile() {
+        let name = newProfileName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        controller.saveProfile(named: name)
+        newProfileName = ""
+        profileNameFocused = false
     }
 
     @ViewBuilder

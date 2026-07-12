@@ -19,11 +19,11 @@ public struct ManualPeer: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
-/// Single-config persistent settings (the Apple receiver deliberately has no profile system
-/// in v1). Plain values in UserDefaults; the password in the Keychain.
+/// The live persistent settings — what the app runs on right now. Plain values in
+/// UserDefaults; the password in the Keychain. Named snapshots of the connection-relevant
+/// subset live in `ProfileStore` (Profiles.swift).
 public final class ReceiverSettings {
     private let defaults: UserDefaults
-    private let keychainService = "com.jonathan859.remsound"
     private let keychainAccount = "profile-password"
 
     public init(defaults: UserDefaults = .standard) {
@@ -102,42 +102,53 @@ public final class ReceiverSettings {
     // MARK: - Password (Keychain)
 
     public var password: String {
-        get {
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: keychainService,
-                kSecAttrAccount as String: keychainAccount,
-                kSecReturnData as String: true,
-                kSecMatchLimit as String: kSecMatchLimitOne,
-            ]
-            var item: CFTypeRef?
-            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-                  let data = item as? Data,
-                  let value = String(data: data, encoding: .utf8) else { return "" }
-            return value
+        get { Keychain.read(account: keychainAccount) }
+        set { Keychain.write(newValue, account: keychainAccount) }
+    }
+}
+
+/// Minimal Keychain string storage shared by the live settings and the profile store —
+/// one generic-password item per account under the app's single service.
+enum Keychain {
+    private static let service = "com.jonathan859.remsound"
+
+    static func read(account: String) -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data,
+              let value = String(data: data, encoding: .utf8) else { return "" }
+        return value
+    }
+
+    /// An empty value deletes the item.
+    static func write(_ value: String, account: String) {
+        let baseQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        if value.isEmpty {
+            SecItemDelete(baseQuery as CFDictionary)
+            return
         }
-        set {
-            let baseQuery: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: keychainService,
-                kSecAttrAccount as String: keychainAccount,
-            ]
-            if newValue.isEmpty {
-                SecItemDelete(baseQuery as CFDictionary)
-                return
-            }
-            let data = Data(newValue.utf8)
-            let status = SecItemUpdate(
-                baseQuery as CFDictionary,
-                [kSecValueData as String: data] as CFDictionary)
-            if status == errSecItemNotFound {
-                var addQuery = baseQuery
-                addQuery[kSecValueData as String] = data
-                // Available after first unlock so a reboot while locked (iOS) can still
-                // bring the receiver up once the user unlocks.
-                addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-                SecItemAdd(addQuery as CFDictionary, nil)
-            }
+        let data = Data(value.utf8)
+        let status = SecItemUpdate(
+            baseQuery as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var addQuery = baseQuery
+            addQuery[kSecValueData as String] = data
+            // Available after first unlock so a reboot while locked (iOS) can still
+            // bring the receiver up once the user unlocks.
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            SecItemAdd(addQuery as CFDictionary, nil)
         }
     }
 }
