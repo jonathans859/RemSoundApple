@@ -121,6 +121,7 @@ public struct ReceiverRootView: View {
         Form {
             profileListSection
             saveProfileSection
+            startupProfileSection
         }
         .formStyle(.grouped)
         // One shared rename prompt for whichever row triggered it (alerts inside ForEach
@@ -228,6 +229,26 @@ public struct ReceiverRootView: View {
         controller.saveProfile(named: name)
         newProfileName = ""
         profileNameFocused = false
+    }
+
+    private var startupProfileSection: some View {
+        Section {
+            Picker("Apply at launch", selection: $controller.startupProfile) {
+                Text("No profile — settings as you left them")
+                    .tag(StartupProfileChoice.off)
+                Text("Last applied profile")
+                    .tag(StartupProfileChoice.lastApplied)
+                ForEach(controller.profiles) { profile in
+                    Text(profile.name).tag(StartupProfileChoice.fixed(profile.id))
+                }
+            }
+            .pickerStyle(.menu)
+            .accessibilityHint("Which profile the app applies each time it starts")
+        } header: {
+            Text("At launch")
+        } footer: {
+            Text("Starting up never turns on microphone sending, even if the profile has it on — the send switch always starts off.")
+        }
     }
 
     @ViewBuilder

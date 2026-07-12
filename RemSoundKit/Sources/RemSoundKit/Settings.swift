@@ -91,6 +91,39 @@ public final class ReceiverSettings {
         set { defaults.set(newValue ?? "", forKey: "selectedMicrophoneId") }
     }
 
+    /// What to apply at launch (Profiles tab). Stored as "" / "last" / a profile UUID
+    /// string; anything unparseable reads as `.off`.
+    public var startupProfile: StartupProfileChoice {
+        get {
+            switch defaults.string(forKey: "startupProfile") ?? "" {
+            case "": return .off
+            case "last": return .lastApplied
+            case let raw: return UUID(uuidString: raw).map { .fixed($0) } ?? .off
+            }
+        }
+        set {
+            switch newValue {
+            case .off: defaults.removeObject(forKey: "startupProfile")
+            case .lastApplied: defaults.set("last", forKey: "startupProfile")
+            case .fixed(let id): defaults.set(id.uuidString, forKey: "startupProfile")
+            }
+        }
+    }
+
+    /// The profile most recently applied (by hand or at launch) — feeds the
+    /// `.lastApplied` startup mode. A stale id (profile since deleted) is harmless:
+    /// `ProfileStore.applyStartupProfile` looks it up and no-ops on a miss.
+    public var lastAppliedProfileId: UUID? {
+        get { defaults.string(forKey: "lastAppliedProfileId").flatMap(UUID.init(uuidString:)) }
+        set {
+            if let id = newValue {
+                defaults.set(id.uuidString, forKey: "lastAppliedProfileId")
+            } else {
+                defaults.removeObject(forKey: "lastAppliedProfileId")
+            }
+        }
+    }
+
     public var listenPort: UInt16 {
         get {
             let value = defaults.integer(forKey: "listenPort")

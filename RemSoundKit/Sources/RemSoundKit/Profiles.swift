@@ -31,6 +31,16 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
+/// What the app applies when it launches (the Profiles tab's "At launch" picker).
+public enum StartupProfileChoice: Hashable, Sendable {
+    /// Nothing applied — the app starts on the settings exactly as last left (default).
+    case off
+    /// Re-apply whichever profile was applied most recently.
+    case lastApplied
+    /// Always apply one specific profile.
+    case fixed(UUID)
+}
+
 /// Persists the profile list as JSON in UserDefaults and each profile's password as its
 /// own Keychain item, so passwords never sit in plain preferences.
 public final class ProfileStore {
@@ -63,5 +73,29 @@ public final class ProfileStore {
 
     private static func passwordAccount(_ id: UUID) -> String {
         "profile-password-\(id.uuidString)"
+    }
+
+    /// Launch-time profile application: rewrites the persisted live settings in place,
+    /// BEFORE `ReceiverController` reads them, so no property observers or engines are
+    /// involved (applying through the controller's didSets during startup re-enters
+    /// `start()`). The send toggle is untouched by design — it is never persisted, so a
+    /// profile applied at launch cannot turn the microphone on; only a hand-applied one
+    /// can (the mic-never-hot-at-launch rule).
+    public func applyStartupProfile(to settings: ReceiverSettings) {
+        let profileId: UUID?
+        switch settings.startupProfile {
+        case .off: return
+        case .lastApplied: profileId = settings.lastAppliedProfileId
+        case .fixed(let id): profileId = id
+        }
+        guard let profileId,
+              let profile = profiles.first(where: { $0.id == profileId }) else { return }
+        settings.manualPeers = profile.manualPeers
+        settings.selectedPeerAddresses = Set(profile.selectedPeerAddresses)
+        settings.receiveEnabled = profile.receiveEnabled
+        settings.selectedMicrophoneId = profile.selectedMicrophoneId
+        settings.targetLatencyMs = profile.targetLatencyMs
+        settings.password = password(forProfile: profileId)
+        settings.lastAppliedProfileId = profileId
     }
 }

@@ -150,6 +150,16 @@ public final class ReceiverController {
         }
     }
 
+    /// What the app applies at the next launch: nothing (default), the last applied
+    /// profile, or one fixed profile. Persisted; consumed before the settings are read
+    /// in `init` by `ProfileStore.applyStartupProfile(to:)`.
+    public var startupProfile: StartupProfileChoice {
+        didSet {
+            guard startupProfile != oldValue else { return }
+            settings.startupProfile = startupProfile
+        }
+    }
+
     // Services
     private let settings = ReceiverSettings()
     private let profileStore = ProfileStore()
@@ -195,9 +205,16 @@ public final class ReceiverController {
     private var glitchSamples: [(time: Date, underruns: Int64, trims: Int64)] = []
 
     public init() {
+        // Startup profile (if configured): rewrite the persisted settings BEFORE they are
+        // read below. Rewriting-then-loading avoids every didSet/engine side effect, and
+        // sending stays off structurally — the send toggle is never persisted, so a
+        // launch-applied profile cannot turn the microphone on.
+        ProfileStore().applyStartupProfile(to: ReceiverSettings())
+
         manualPeers = settings.manualPeers
         selectedAddresses = settings.selectedPeerAddresses
         profiles = profileStore.profiles
+        startupProfile = settings.startupProfile
         volume = settings.volume
         targetLatencyMs = settings.targetLatencyMs
         cuesEnabled = settings.cuesEnabled
@@ -425,6 +442,9 @@ public final class ReceiverController {
         profileStore.setPassword("", forProfile: id) // removes the Keychain item
         profiles.remove(at: index)
         profileStore.profiles = profiles
+        // Drop dangling launch references so the picker never shows a deleted profile.
+        if startupProfile == .fixed(id) { startupProfile = .off }
+        if settings.lastAppliedProfileId == id { settings.lastAppliedProfileId = nil }
         announce("Profile \(name) deleted")
     }
 
@@ -448,6 +468,7 @@ public final class ReceiverController {
         // Applying a profile is an explicit user tap, so a profile with sending on turning
         // the mic on here does not break the "mic never goes hot at launch" rule.
         sendEnabled = profile.sendEnabled
+        settings.lastAppliedProfileId = profile.id // feeds the "last applied" launch mode
         applyPeerSelection()
         resolveManualPeers()
         refreshNow()

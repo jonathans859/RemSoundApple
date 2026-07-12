@@ -72,6 +72,11 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   (`ProfileTests.testEncodedProfileJsonNeverContainsAPassword`). NOT the Windows profile
   file format — local only. Applying a profile with sending on DOES start the mic; that's
   an explicit user tap, so it doesn't break the mic-never-hot-at-launch rule.
+  Startup profile (`StartupProfileChoice`: off / lastApplied / fixed id): applied in
+  `ReceiverController.init` by REWRITING the persisted settings before they're read
+  (`ProfileStore.applyStartupProfile(to:)`) — never via `applyProfile`, whose didSets
+  re-enter `start()` during startup. Send stays off structurally at launch because the
+  send toggle is never persisted.
 - Mic send: Opus-only, one mixed lane, 48 kHz stereo 192 kbps (RESTRICTED_LOWDELAY,
   complexity 10, VBR, FEC, 10 % loss bias) — mirrors the Windows sender. One endpoint per
   selected peer (two paths of one machine would double its sessions). Outbound audio uses
