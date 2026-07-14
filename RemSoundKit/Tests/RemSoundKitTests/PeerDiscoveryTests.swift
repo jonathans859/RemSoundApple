@@ -59,4 +59,31 @@ final class PeerDiscoveryTests: XCTestCase {
 
         XCTAssertEqual(service.currentPeers.count, 2)
     }
+
+    // Battery finding 4: an auto-learned announcement source is a unicast target only while
+    // it keeps announcing — it must expire once the peer goes quiet, so we stop transmitting
+    // our 1.5 s announcement to a vanished IP. A user-provided (manual/selected) peer never
+    // expires, even while quiet.
+    func testLearnedUnicastTargetExpiresButProvidedDoesNot() throws {
+        let service = PeerDiscoveryService()
+        service.setUnicastPeerAddresses([vpnAddress]) // provided — never expires
+
+        try announce(service, instanceId: UUID(), from: lanAddress) // learned, stamped ~now
+        let now = Date()
+
+        // Both present while the learned source is fresh.
+        XCTAssertEqual(Set(service.unicastTargets(asOf: now)), [lanAddress, vpnAddress])
+
+        // Past the 8 s peer-expiry window the learned one is pruned; the provided one stays.
+        XCTAssertEqual(service.unicastTargets(asOf: now.addingTimeInterval(9)), [vpnAddress])
+    }
+
+    func testAllLearnedTargetsExpireWhenPeersGoQuiet() throws {
+        let service = PeerDiscoveryService()
+        try announce(service, instanceId: UUID(), from: lanAddress)
+        try announce(service, instanceId: UUID(), from: vpnAddress)
+
+        XCTAssertEqual(Set(service.unicastTargets(asOf: Date())), [lanAddress, vpnAddress])
+        XCTAssertTrue(service.unicastTargets(asOf: Date().addingTimeInterval(9)).isEmpty)
+    }
 }

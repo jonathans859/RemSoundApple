@@ -77,7 +77,15 @@ public final class PeerDiscoveryService {
 
     private var audioPort: UInt16 = RemPacket.defaultPort
     private var displayName: String = "Apple device"
-    private var unicastTargets: [UInt32] = []
+    /// Manually-entered / selected peers (via `setUnicastPeerAddresses`). These NEVER expire
+    /// — the user asked for them, and a quiet peer must still receive our announcements.
+    private var providedUnicastTargets: [UInt32] = []
+    /// Auto-learned announcement sources (address → last time it announced to us). An entry
+    /// that hasn't been refreshed within the peer-expiry window is pruned before each send,
+    /// so we stop unicasting our 1.5 s announcement to peers that vanished hours ago —
+    /// pointless traffic that only holds the network radio in its active state (battery).
+    /// Unioned with `providedUnicastTargets` at send time.
+    private var learnedUnicastTargets: [UInt32: Date] = [:]
     /// Advertised capabilities — the live send/receive toggles, like Windows (its
     /// UpdateCapabilities re-announces on every checkbox change). Guarded by `lock`.
     private var canSend = true
@@ -153,19 +161,12 @@ public final class PeerDiscoveryService {
     }
 
     /// Replace the set of IPs that announcements are unicast to (manual/remembered peers).
+    /// These are the user's chosen peers and never expire — see `providedUnicastTargets`.
     public func setUnicastPeerAddresses(_ addresses: [UInt32]) {
         lock.lock()
-        unicastTargets = Array(Set(addresses))
+        providedUnicastTargets = Array(Set(addresses))
         lock.unlock()
         timerQueue.async { [weak self] in self?.sendAnnouncement() }
-    }
-
-    private func addUnicastTarget(_ address: UInt32) {
-        lock.lock()
-        defer { lock.unlock() }
-        if !unicastTargets.contains(address) {
-            unicastTargets.append(address)
-        }
     }
 
     // MARK: - Wire format
@@ -185,11 +186,29 @@ public final class PeerDiscoveryService {
             socket.send(json, to: target) // best-effort; may fail on iOS without entitlement
         }
         lock.lock()
-        let unicast = unicastTargets
+        pruneLearnedUnicastLocked(now: Date())
+        // User-chosen peers (never expire) unioned with still-live learned sources.
+        let unicast = Set(providedUnicastTargets).union(learnedUnicastTargets.keys)
         lock.unlock()
         for address in unicast {
             socket.send(json, to: UDPEndpoint(address: address, port: Self.defaultDiscoveryPort))
         }
+    }
+
+    /// Drop learned unicast targets that haven't announced within the peer-expiry window.
+    /// Provided (manual/selected) targets are untouched — they never expire.
+    private func pruneLearnedUnicastLocked(now: Date) {
+        let cutoff = now.addingTimeInterval(-Self.peerExpirySeconds)
+        learnedUnicastTargets = learnedUnicastTargets.filter { $0.value >= cutoff }
+    }
+
+    /// Internal test seam: the effective unicast set (provided ∪ still-live learned) as of
+    /// `now`, pruning expired learned entries. `sendAnnouncement` uses the same logic live.
+    func unicastTargets(asOf now: Date) -> [UInt32] {
+        lock.lock()
+        defer { lock.unlock() }
+        pruneLearnedUnicastLocked(now: now)
+        return Array(Set(providedUnicastTargets).union(learnedUnicastTargets.keys))
     }
 
     // Internal (not private) so tests can drive the multi-address bookkeeping without sockets.
@@ -204,11 +223,13 @@ public final class PeerDiscoveryService {
         let audioPort = UInt16(clamping: message.AudioPort)
         let now = Date()
 
-        // Announce back the way it came — makes discovery bidirectional over VPNs.
-        addUnicastTarget(remote.address)
-
         var changed = false
         lock.lock()
+        // Announce back the way it came — makes discovery bidirectional over VPNs. Stamping
+        // the source's learned-target time on every announcement keeps it a unicast target
+        // while it keeps announcing, and lets it expire from that set (pruned before each
+        // send) once it goes quiet — so we don't keep transmitting to a vanished peer.
+        learnedUnicastTargets[remote.address] = now
         if var existing = peers[message.InstanceId] {
             changed = existing.name != name
                 || existing.audioPort != audioPort
