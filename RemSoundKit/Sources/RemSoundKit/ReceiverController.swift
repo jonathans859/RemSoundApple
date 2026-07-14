@@ -217,6 +217,11 @@ public final class ReceiverController {
     /// DetectAndAnnouncePeerHealthTransitions, upstream 2026-05-31) — see `updateCues`.
     private var peerConnectedState: [UInt32: Bool] = [:]
     private var refreshTask: Task<Void, Never>?
+    /// Whether a UI is currently on screen (battery finding 2). Defaults to false so a
+    /// menu-bar macOS launch — window closed — does no presentation work until the window
+    /// opens; the apps report visibility via `setUIVisible` (iOS scenePhase, macOS the main
+    /// window's onAppear/onDisappear). Gates only the presentation half of the refresh tick.
+    private var uiVisible = false
 
     // Previous traffic-counter snapshot for the per-second rate lines.
     private var lastBytesReceived: Int64 = 0
@@ -607,6 +612,17 @@ public final class ReceiverController {
 
     // MARK: - Periodic refresh
 
+    /// Report whether a UI is on screen (battery finding 2). iOS calls this from scenePhase
+    /// (.active vs not); macOS from the main window's onAppear/onDisappear — the menu-bar
+    /// label shows no controller state, so window-closed correctly means "not visible". While
+    /// invisible the 1 Hz tick runs only its functional half; on becoming visible we run one
+    /// immediate full refresh so the UI is never stale.
+    public func setUIVisible(_ visible: Bool) {
+        guard uiVisible != visible else { return }
+        uiVisible = visible
+        if visible { refreshNow() }
+    }
+
     private func refreshNow() {
         guard isRunning else {
             refreshPeerList()
@@ -614,11 +630,24 @@ public final class ReceiverController {
             trafficSummary = ""
             return
         }
+        // Functional half — MUST run whether or not a UI is visible; this app spends most of
+        // its life screen-locked, but cues, DNS retry, send-path health, and the IO-buffer
+        // adaptation still have to work. refreshPeerList stays here (rather than with the
+        // presentation steps as the audit first sketched) because updateCues/updateSendTargets
+        // read `peers`, and rebuilding it is the cheapest way to keep that data fresh; it now
+        // runs BEFORE updateCues so the cues see this-tick peers, not last-tick. updateCues
+        // also fires the connect/lost VoiceOver announcements, which background screen-reader
+        // users depend on, so it is never gated.
         retryUnresolvedPeersIfNeeded()
-        updateCues()
         refreshPeerList()
+        updateCues()
         updateSendTargets()
         updateIOBufferDemand()
+
+        // Presentation half — status-string building and @Observable churn the UI diffs.
+        // Pure waste while nothing is on screen; setUIVisible(true) forces one immediate full
+        // refresh so the UI never shows stale data on return.
+        guard uiVisible else { return }
         updateSendStatus()
         updateSummary()
         updateConnectionDetails()

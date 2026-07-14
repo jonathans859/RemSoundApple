@@ -41,9 +41,15 @@ struct RemSoundMacApp: App {
                 .onAppear {
                     NSApp.setActivationPolicy(.regular)
                     NSApp.activate()
+                    // Battery (finding 2): this window is the only surface that shows
+                    // controller state (the menu-bar label doesn't), so window-open == visible
+                    // and window-closed == not visible. While closed the 1 Hz tick skips its
+                    // presentation half; opening runs one immediate full refresh.
+                    controller.setUIVisible(true)
                 }
                 .onDisappear {
                     NSApp.setActivationPolicy(.accessory)
+                    controller.setUIVisible(false)
                 }
         }
         .defaultSize(width: 480, height: 600)
