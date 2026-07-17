@@ -626,7 +626,7 @@ public final class ReceiverController {
         if visible { refreshNow() }
     }
 
-    \ Every published property this tick touches is assigned only when its value actually
+    // Every published property this tick touches is assigned only when its value actually
     // changed. `@Observable` fires its mutation on the *write*, not on the change, so an
     // unguarded per-second assignment of an identical string wakes every view that reads it
     // 60 times a minute for nothing — `peers` in particular is rebuilt below even while the
