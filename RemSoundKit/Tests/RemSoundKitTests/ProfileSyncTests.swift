@@ -86,7 +86,11 @@ final class ProfileSyncTests: XCTestCase {
         let office = makeProfile("Office")
         let travel = makeProfile("Travel")
 
-        let result = ProfileSync.merge(local: [home], remote: [travel, office], syncedIds: [home.id])
+        // Home is in syncedIds, so it must also be in the remote set — a synced profile
+        // missing remotely means "deleted on another device", which is a different case
+        // (testProfileDeletedOnAnotherDeviceIsRemovedHere).
+        let result = ProfileSync.merge(local: [home], remote: [home, travel, office],
+                                       syncedIds: [home.id])
 
         // Local order preserved, arrivals appended in a device-independent order.
         XCTAssertEqual(result.profiles.map(\.name), ["Home", "Office", "Travel"])
