@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Profile sync: the key-value store carries the saved profiles between the user's
+	     devices. Passwords do NOT go through it (it is not end-to-end encrypted) — they
+	     ride iCloud Keychain, which needs no entitlement. The $(TeamIdentifierPrefix)
+	     form is the default container; no CloudKit container is involved.
+
+	     This is the iOS target's only entitlement — the app is otherwise plain (no
+	     multicast entitlement: iOS UDP broadcast is deliberately unused, discovery works
+	     by unicast auto-learn). -->
+	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
+	<string>$(TeamIdentifierPrefix)$(CFBundleIdentifier)</string>
+</dict>
+</plist>

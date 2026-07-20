@@ -72,6 +72,27 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   (`ProfileTests.testEncodedProfileJsonNeverContainsAPassword`). NOT the Windows profile
   file format — local only. A profile applies exactly as saved, send included — hand-tap
   or at launch, no exceptions (user, 2026-07-12).
+  **iCloud sync (2026-07-20, opt-in, default off)** — `ProfileSync.swift` mirrors profiles
+  through `NSUbiquitousKeyValueStore`, **one key per profile** (`profile-<uuid>`), never one
+  array key: KVS conflict resolution is last-writer-wins per key, so per-profile keys let
+  edits to different profiles on two devices both survive. `push` is deliberately
+  **additive** — it never removes remote keys it doesn't recognise, so a device that hasn't
+  pulled can't wipe the shared set; `removeFromCloud` (user delete) is the ONLY path that
+  drops a remote key. `ReceiverSettings.syncedProfileIds` distinguishes "deleted on another
+  device" (was synced, now absent → delete locally) from "created here while offline" (never
+  synced → keep and push); without it the first pull eats offline-created profiles.
+  Passwords do NOT go in KVS (**not** end-to-end encrypted) — profile Keychain items gain
+  `kSecAttrSynchronizable` so iCloud Keychain carries them E2E-encrypted, which is exactly
+  what the password-never-in-JSON rule buys. Synchronizable items need the data-protection
+  keychain (`kSecUseDataProtectionKeychain`) on macOS and are a *distinct* item from the
+  device-local one with the same service+account — `Keychain.read` therefore tries both
+  flavours and `setSynchronizable` migrates on toggle. Needs the
+  `com.apple.developer.ubiquity-kvstore-identifier` entitlement on BOTH targets (this is why
+  `Apps/iOS/RemSound.entitlements` exists at all — it was created for this and wired into
+  the hand-written pbxproj). Local/device state deliberately does NOT sync: the live
+  settings, `appliedProfile`/`lastAppliedProfileId`, and the startup choice. A profile's
+  microphone UID may not exist on the receiving device — capture already falls through to
+  the default input, and the picker labels the dangling selection instead of hiding it.
   Startup profile (`StartupProfileChoice`: off / lastApplied / fixed id): applied in
   `ReceiverController.init` by REWRITING the persisted settings before they're read
   (`ProfileStore.applyStartupProfile(to:)`) — never via `applyProfile`, whose didSets
@@ -168,6 +189,10 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   discovery on either platform, even via `AppIntentsPackage` forwarding — burned a full
   day on this 2026-07-11/12; the parameterless toggles exist because App Shortcuts can't
   pre-fill a Bool. No entitlements or ASC setup involved),
+  `Profiles.swift` + `ProfileSync.swift` (saved snapshots and their opt-in iCloud mirror —
+  the `ProfileSyncStore` protocol exists so the merge is testable without an iCloud account,
+  which CI does not have; the real store silently no-ops when signed out, so tests against
+  it would pass vacuously),
   `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a four-tab
   `TabView`: **Connectivity** = status/peers/add-peer (its tab bar item exposes the live
   traffic rates as its accessibility value, `controller.trafficSummary`), **Send &

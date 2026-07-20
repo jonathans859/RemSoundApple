@@ -97,6 +97,25 @@ public final class ReceiverSettings {
         set { defaults.set(newValue ?? "", forKey: "selectedMicrophoneId") }
     }
 
+    /// Mirror saved profiles through iCloud so the user's devices share one set
+    /// (Profiles tab). Default off: turning it on moves profile passwords into the
+    /// synchronizable keychain and publishes the profile list to the user's iCloud
+    /// account, which is not something an app update should start doing by itself.
+    /// Device-local state — which device syncs is a per-device choice.
+    public var iCloudProfileSyncEnabled: Bool {
+        get { defaults.bool(forKey: "iCloudProfileSyncEnabled") }
+        set { defaults.set(newValue, forKey: "iCloudProfileSyncEnabled") }
+    }
+
+    /// Ids this device has published to iCloud at least once. Lets a pull tell a profile
+    /// deleted on another device (was synced, now absent → delete locally) from one
+    /// created here while offline (never synced, absent → keep and push). Without it,
+    /// the first pull after creating a profile offline would silently eat it.
+    var syncedProfileIds: Set<UUID> {
+        get { Set((defaults.stringArray(forKey: "syncedProfileIds") ?? []).compactMap(UUID.init(uuidString:))) }
+        set { defaults.set(newValue.map(\.uuidString), forKey: "syncedProfileIds") }
+    }
+
     /// What to apply at launch (Profiles tab). Stored as "" / "last" / a profile UUID
     /// string; anything unparseable reads as `.off`.
     public var startupProfile: StartupProfileChoice {
@@ -148,46 +167,93 @@ public final class ReceiverSettings {
 
 /// Minimal Keychain string storage shared by the live settings and the profile store —
 /// one generic-password item per account under the app's single service.
+///
+/// Items come in two flavours, and a given account can only be one at a time:
+///
+/// - **device-local** (the default): the legacy file keychain on macOS, never leaves the
+///   device. The live password and, while profile sync is off, profile passwords.
+/// - **synchronizable** (`kSecAttrSynchronizable`): carried between the user's devices by
+///   iCloud Keychain, end-to-end encrypted — Apple cannot read it. This is what lets
+///   profile passwords sync while the profile JSON in the key-value store stays
+///   password-free (iCloud KVS is *not* end-to-end encrypted, so a password must never
+///   go in there).
+///
+/// The two are distinct items even with the same service + account, so every query says
+/// which one it means, and `setSynchronizable` moves an account between them.
 enum Keychain {
     private static let service = "com.jonathan859.remsound"
 
-    static func read(account: String) -> String {
-        let query: [String: Any] = [
+    /// The attributes identifying one item. `synchronizable == nil` means "either kind",
+    /// which is only valid for lookups, never for adds.
+    private static func baseQuery(account: String, synchronizable: Bool?) -> [String: Any] {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
         ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data,
-              let value = String(data: data, encoding: .utf8) else { return "" }
-        return value
+        switch synchronizable {
+        case .some(true):
+            query[kSecAttrSynchronizable as String] = kCFBooleanTrue
+            // Synchronizable items only exist in the data-protection keychain. On macOS
+            // that is opt-in; on iOS it is the only keychain and the key is harmless.
+            query[kSecUseDataProtectionKeychain as String] = kCFBooleanTrue
+        case .some(false):
+            query[kSecAttrSynchronizable as String] = kCFBooleanFalse
+        case .none:
+            query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+        }
+        return query
     }
 
-    /// An empty value deletes the item.
-    static func write(_ value: String, account: String) {
-        let baseQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
+    /// Reads an account regardless of which keychain flavour holds it. macOS keeps
+    /// device-local items in the legacy keychain and synchronizable ones in the
+    /// data-protection keychain, and no single query spans both, so this tries each.
+    static func read(account: String) -> String {
+        for synchronizable in [nil, true] as [Bool?] {
+            var query = baseQuery(account: account, synchronizable: synchronizable)
+            query[kSecReturnData as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            var item: CFTypeRef?
+            if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+               let data = item as? Data,
+               let value = String(data: data, encoding: .utf8) {
+                return value
+            }
+        }
+        return ""
+    }
+
+    /// An empty value deletes the item — in both flavours, so a stale copy left behind by
+    /// a sync toggle can never resurrect a deleted profile's password.
+    static func write(_ value: String, account: String, synchronizable: Bool = false) {
         if value.isEmpty {
-            SecItemDelete(baseQuery as CFDictionary)
+            SecItemDelete(baseQuery(account: account, synchronizable: true) as CFDictionary)
+            SecItemDelete(baseQuery(account: account, synchronizable: false) as CFDictionary)
             return
         }
+        let query = baseQuery(account: account, synchronizable: synchronizable)
         let data = Data(value.utf8)
         let status = SecItemUpdate(
-            baseQuery as CFDictionary,
-            [kSecValueData as String: data] as CFDictionary)
+            query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
-            var addQuery = baseQuery
+            var addQuery = query
             addQuery[kSecValueData as String] = data
             // Available after first unlock so a reboot while locked (iOS) can still
-            // bring the receiver up once the user unlocks.
+            // bring the receiver up once the user unlocks. Compatible with
+            // synchronizable items — only the `…ThisDeviceOnly` classes are not.
             addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
             SecItemAdd(addQuery as CFDictionary, nil)
         }
+    }
+
+    /// Move an account between the device-local and iCloud-synchronizable keychains,
+    /// preserving its value. Used when the profile-sync toggle flips: existing profile
+    /// passwords have to follow, or sync would arrive on the other device with blanks.
+    /// A no-op when the account has no value.
+    static func setSynchronizable(_ on: Bool, account: String) {
+        let value = read(account: account)
+        guard !value.isEmpty else { return }
+        SecItemDelete(baseQuery(account: account, synchronizable: !on) as CFDictionary)
+        write(value, account: account, synchronizable: on)
     }
 }

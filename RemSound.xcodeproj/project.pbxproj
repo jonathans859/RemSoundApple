@@ -25,6 +25,7 @@
 		AF1000000000000000000001 /* RemSoundIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemSoundIOSApp.swift; sourceTree = "<group>"; };
 		AF1000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AF1000000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AF1000000000000000000004 /* RemSound.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RemSound.entitlements; sourceTree = "<group>"; };
 		AF2000000000000000000001 /* RemSoundMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemSoundMacApp.swift; sourceTree = "<group>"; };
 		AF2000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AF2000000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -98,6 +99,7 @@
 				AF1000000000000000000001 /* RemSoundIOSApp.swift */,
 				AF1000000000000000000002 /* Info.plist */,
 				AF1000000000000000000003 /* Assets.xcassets */,
+				AF1000000000000000000004 /* RemSound.entitlements */,
 			);
 			path = iOS;
 			sourceTree = "<group>";
@@ -286,6 +288,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_ENTITLEMENTS = Apps/iOS/RemSound.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
@@ -311,6 +314,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_ENTITLEMENTS = Apps/iOS/RemSound.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;

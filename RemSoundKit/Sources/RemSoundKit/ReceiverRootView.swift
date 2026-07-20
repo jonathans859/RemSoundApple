@@ -129,6 +129,7 @@ public struct ReceiverRootView: View {
             profileListSection
             saveProfileSection
             startupProfileSection
+            syncSection
         }
         .formStyle(.grouped)
         // One shared rename prompt for whichever row triggered it (alerts inside ForEach
@@ -259,6 +260,35 @@ public struct ReceiverRootView: View {
             Text("At launch")
         } footer: {
             Text("The profile is applied exactly as saved — if it was saved with microphone sending on, sending starts with the app.")
+        }
+    }
+
+    /// The footer carries the caveats deliberately: sync depends on two separate iCloud
+    /// switches the app cannot turn on itself, and a profile's microphone may not exist
+    /// on the device it lands on. Plain sentences, because VoiceOver reads the footer as
+    /// the toggle's context.
+    private var syncSection: some View {
+        Section {
+            Toggle("Sync profiles through iCloud", isOn: $controller.iCloudProfileSyncEnabled)
+                .accessibilityHint("Shares your saved profiles with your other devices signed in to the same iCloud account")
+        } header: {
+            Text("iCloud")
+        } footer: {
+            Text("""
+            Saved profiles are shared with your other devices signed in to the same iCloud \
+            account. Only the profiles are shared — the settings you are running right now, \
+            which profile is applied, and the launch choice stay on this device.
+
+            Profile passwords travel through iCloud Keychain, which is end-to-end encrypted, \
+            so this needs iCloud Keychain switched on in Settings as well. Without it the \
+            profiles still arrive, but with empty passwords you have to type once per device.
+
+            A profile remembers a specific microphone. If that input does not exist on the \
+            device the profile arrives on, that device sends from its default input instead.
+
+            Deleting a profile deletes it everywhere. Turning this off leaves the profiles \
+            already in iCloud for your other devices and keeps this device's copies.
+            """)
         }
     }
 
@@ -509,11 +539,15 @@ private struct MicrophonePicker: View {
             ForEach(controller.availableMicrophones) { mic in
                 Text(mic.name).tag(String?.some(mic.id))
             }
-            // Keep a previously chosen input selectable while it's unplugged so the
-            // picker doesn't silently jump selections.
+            // Keep a chosen input selectable while it's absent so the picker doesn't
+            // silently jump selections — it's unplugged, or the profile naming it was
+            // saved on another device. Capture falls back to the default input either
+            // way (MicrophoneCapture.applyPreferredInputPreStart / applyPreferredDevice),
+            // so the label says so rather than leaving a mystery selection.
             if let selected = controller.selectedMicrophoneId,
                !controller.availableMicrophones.contains(where: { $0.id == selected }) {
-                Text("Previously selected input").tag(String?.some(selected))
+                Text("Saved input, not available here — sending from the default input")
+                    .tag(String?.some(selected))
             }
         }
         // Explicit menu style: a pop-up button (macOS) / anchored menu (iOS) reads as

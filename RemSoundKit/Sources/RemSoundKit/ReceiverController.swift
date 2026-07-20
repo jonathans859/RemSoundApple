@@ -179,9 +179,26 @@ public final class ReceiverController {
         }
     }
 
+    /// Share saved profiles across the user's devices through iCloud. Flipping this moves
+    /// the profile passwords between the device-local and iCloud keychains and, when
+    /// turning on, merges with whatever is already in the account — so the store does the
+    /// work, not a plain settings write.
+    public var iCloudProfileSyncEnabled: Bool {
+        didSet {
+            guard iCloudProfileSyncEnabled != oldValue else { return }
+            profileStore.setSyncEnabled(iCloudProfileSyncEnabled)
+            profiles = profileStore.profiles
+            announce(iCloudProfileSyncEnabled
+                     ? "Profile sync through iCloud on"
+                     : "Profile sync through iCloud off")
+        }
+    }
+
     // Services
     private let settings = ReceiverSettings()
-    private let profileStore = ProfileStore()
+    private let profileStore = ProfileStore(syncStore: NSUbiquitousKeyValueStore.default)
+    /// Token for the iCloud external-change notification, released in `deinit`.
+    private var cloudObserver: NSObjectProtocol?
     private let engine = AudioReceiverEngine()
     private let output: AudioOutput
     private let discovery = PeerDiscoveryService()
@@ -242,6 +259,7 @@ public final class ReceiverController {
         selectedAddresses = settings.selectedPeerAddresses
         profiles = profileStore.profiles
         startupProfile = settings.startupProfile
+        iCloudProfileSyncEnabled = settings.iCloudProfileSyncEnabled
         // After the overlay above, so a startup profile reads as applied right away.
         lastAppliedProfileId = settings.lastAppliedProfileId
         volume = settings.volume
@@ -301,6 +319,29 @@ public final class ReceiverController {
         }
         selectedMicrophoneId = settings.selectedMicrophoneId
         microphone.setPreferredInput(id: selectedMicrophoneId)
+
+        // Another device changed the shared profile set. The notification also fires for
+        // the initial download after a fresh install, which is how a new device picks up
+        // the existing profiles without any user action.
+        cloudObserver = NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: NSUbiquitousKeyValueStore.default,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.mergeProfilesFromCloud() }
+        }
+        // Kick a pull at launch: changes that landed while the app was not running do not
+        // replay as notifications.
+        if iCloudProfileSyncEnabled {
+            NSUbiquitousKeyValueStore.default.synchronize()
+            mergeProfilesFromCloud()
+        }
+    }
+
+    deinit {
+        if let cloudObserver {
+            NotificationCenter.default.removeObserver(cloudObserver)
+        }
     }
 
     // MARK: - Lifecycle
@@ -487,11 +528,29 @@ public final class ReceiverController {
         profileStore.setPassword("", forProfile: id) // removes the Keychain item
         profiles.remove(at: index)
         profileStore.profiles = profiles
+        // Deleting is the ONE path that removes the profile from iCloud, so that a device
+        // which has not pulled yet can never wipe the shared set just by publishing its
+        // own shorter list (see ProfileSync.push).
+        profileStore.removeFromCloud(id: id)
         // Drop dangling launch references so the picker never shows a deleted profile.
         if startupProfile == .fixed(id) { startupProfile = .off }
         if settings.lastAppliedProfileId == id { settings.lastAppliedProfileId = nil }
         if lastAppliedProfileId == id { lastAppliedProfileId = nil }
         announce("Profile \(name) deleted")
+    }
+
+    /// Adopt profile changes made on another device. Only the saved snapshots move — the
+    /// live configuration, which profile is applied here, and the launch choice are all
+    /// device state and stay put, so a profile applied on the Mac does not reach in and
+    /// change what the iPhone is running.
+    private func mergeProfilesFromCloud() {
+        guard let merged = profileStore.mergeFromCloud() else { return }
+        profiles = merged
+        // A profile deleted elsewhere must not linger as the launch choice here.
+        if case .fixed(let id) = startupProfile, !merged.contains(where: { $0.id == id }) {
+            startupProfile = .off
+        }
+        refreshNow()
     }
 
     /// Replace the live configuration with a saved profile. Only the profile's fields are
