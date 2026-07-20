@@ -27,6 +27,19 @@ public struct PeerListEntry: Identifiable, Hashable, Sendable {
     var allAddressStrings: [String] { audioEndpoints.map(\.addressString) }
 }
 
+/// Holds a NotificationCenter observer token and unregisters it when it goes away, so an
+/// actor-isolated owner does not need a `deinit` of its own (a `@MainActor` class cannot
+/// touch its stored properties from the nonisolated `deinit`).
+private final class NotificationToken {
+    var value: NSObjectProtocol?
+
+    deinit {
+        if let value {
+            NotificationCenter.default.removeObserver(value)
+        }
+    }
+}
+
 /// App-facing coordinator: owns the engine, audio output, discovery, heartbeat, and cues;
 /// publishes UI state. All published state is touched on the main actor; the underlying
 /// services run on their own threads and are polled / event-driven into main-actor updates.
@@ -197,8 +210,12 @@ public final class ReceiverController {
     // Services
     private let settings = ReceiverSettings()
     private let profileStore = ProfileStore(syncStore: NSUbiquitousKeyValueStore.default)
-    /// Token for the iCloud external-change notification, released in `deinit`.
-    private var cloudObserver: NSObjectProtocol?
+    /// Token for the iCloud external-change notification. It lives in a box rather than a
+    /// plain property because this class is `@MainActor`, which makes its `deinit`
+    /// nonisolated and therefore unable to read main-actor state — the box's own deinit
+    /// does the removal instead. (`MicrophoneCapture` can hold its tokens directly; it is
+    /// not actor-isolated.)
+    private let cloudObserver = NotificationToken()
     private let engine = AudioReceiverEngine()
     private let output: AudioOutput
     private let discovery = PeerDiscoveryService()
@@ -323,7 +340,7 @@ public final class ReceiverController {
         // Another device changed the shared profile set. The notification also fires for
         // the initial download after a fresh install, which is how a new device picks up
         // the existing profiles without any user action.
-        cloudObserver = NotificationCenter.default.addObserver(
+        cloudObserver.value = NotificationCenter.default.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
             object: NSUbiquitousKeyValueStore.default,
             queue: .main
@@ -335,12 +352,6 @@ public final class ReceiverController {
         if iCloudProfileSyncEnabled {
             NSUbiquitousKeyValueStore.default.synchronize()
             mergeProfilesFromCloud()
-        }
-    }
-
-    deinit {
-        if let cloudObserver {
-            NotificationCenter.default.removeObserver(cloudObserver)
         }
     }
 
