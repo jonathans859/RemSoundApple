@@ -354,25 +354,33 @@ jobs:
             '{key_id: $kid, issuer_id: $iss, key: $key, duration: 1200, in_house: false}' \
             > "$RUNNER_TEMP/asc/api_key.json"
 
-      # Archived UNSIGNED, unlike the iOS job — all signing happens at export below.
+      # Archived with an AD-HOC signature, unlike the iOS job — real signing happens at
+      # export below. Two constraints have to be satisfied at once here, and only ad-hoc
+      # signing satisfies both:
       #
-      # The archive step normally signs with an Apple *Development* identity, which needs a
-      # matching development provisioning profile. An iOS development profile can be issued
-      # with no registered devices; a **Mac** one cannot, so from the moment the app gained
-      # an App-ID-level capability (iCloud key-value store, 2026-07-20) automatic signing
-      # started trying to create a "Mac App Development" profile and failed on a team with
-      # no registered Macs — development happens on Windows, there is no Mac to register:
+      # 1. The archive must NOT need a development provisioning profile. Automatic signing
+      #    signs the archive with an Apple *Development* identity, which needs a matching
+      #    profile. An iOS development profile can be issued to a team with no registered
+      #    devices; a **Mac** one cannot. So from the moment the app gained an App-ID-level
+      #    capability (iCloud key-value store, 2026-07-20) the macOS job died with:
+      #      error: Your team has no devices from which to generate a provisioning profile.
+      #      error: No profiles for 'com.jonathan859.remsound' were found … Mac App
+      #             Development …
+      #    Development happens on Windows; there is no Mac to register, so that path is a
+      #    dead end rather than a missing setup step.
       #
-      #   error: Your team has no devices from which to generate a provisioning profile.
-      #   error: No profiles for 'com.jonathan859.remsound' were found: Xcode couldn't find
-      #          any Mac App Development provisioning profiles matching …
+      # 2. The archive MUST still carry the entitlements. Archiving with
+      #    CODE_SIGNING_ALLOWED=NO cleared the first problem but created a worse one: an
+      #    unsigned binary has no entitlements for the export re-sign to carry over, so the
+      #    upload was rejected by App Store Connect with
+      #      App sandbox not enabled … must include "com.apple.security.app-sandbox" (90296)
+      #    and the sandbox is mandatory for Mac App Store / TestFlight builds.
       #
-      # Skipping signing here sidesteps the development profile entirely. Nothing is lost:
-      # the export step re-signs with the cloud-managed *distribution* certificate and a Mac
-      # App Store profile, and distribution profiles are not device-bound. Signing is
-      # explicitly disabled AND the style forced to manual with an empty profile, so
-      # xcodebuild does not contact Apple for provisioning at archive time at all.
-      - name: Archive (unsigned — export does the cloud signing)
+      # An ad-hoc signature ("-") embeds the entitlements without consulting Apple for a
+      # certificate or a profile. The export step then re-signs with the cloud-managed
+      # *distribution* certificate and a Mac App Store profile — which is not device-bound —
+      # carrying those entitlements through.
+      - name: Archive (ad-hoc signed — export does the cloud signing)
         run: |
           xcodebuild archive \
             -project RemSound.xcodeproj \
@@ -380,14 +388,28 @@ jobs:
             -destination 'generic/platform=macOS' \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/RemSound.xcarchive" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
             CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="-" \
             PROVISIONING_PROFILE_SPECIFIER="" \
             DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
             MARKETING_VERSION="${{ steps.version.outputs.marketing }}" \
             CURRENT_PROJECT_VERSION="${{ steps.version.outputs.build }}"
+
+      # Guard the trap above: if the archived binary ever loses the sandbox entitlement
+      # again, fail here with a clear message instead of 12 minutes later inside altool's
+      # 90296 rejection.
+      - name: Verify the archived app kept its entitlements
+        run: |
+          APP="$RUNNER_TEMP/RemSound.xcarchive/Products/Applications/RemSound.app"
+          codesign -d --entitlements :- "$APP" > "$RUNNER_TEMP/archived-entitlements.plist"
+          cat "$RUNNER_TEMP/archived-entitlements.plist"
+          for key in com.apple.security.app-sandbox \
+                     com.apple.developer.ubiquity-kvstore-identifier; do
+            if ! grep -q "$key" "$RUNNER_TEMP/archived-entitlements.plist"; then
+              echo "::error::Archived app is missing the $key entitlement — the export would upload a build App Store Connect rejects."
+              exit 1
+            fi
+          done
 
       - name: Export PKG
         run: |
