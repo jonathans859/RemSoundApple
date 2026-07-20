@@ -354,7 +354,25 @@ jobs:
             '{key_id: $kid, issuer_id: $iss, key: $key, duration: 1200, in_house: false}' \
             > "$RUNNER_TEMP/asc/api_key.json"
 
-      - name: Archive (cloud signing — Apple signs with its cloud-managed certificate)
+      # Archived UNSIGNED, unlike the iOS job — all signing happens at export below.
+      #
+      # The archive step normally signs with an Apple *Development* identity, which needs a
+      # matching development provisioning profile. An iOS development profile can be issued
+      # with no registered devices; a **Mac** one cannot, so from the moment the app gained
+      # an App-ID-level capability (iCloud key-value store, 2026-07-20) automatic signing
+      # started trying to create a "Mac App Development" profile and failed on a team with
+      # no registered Macs — development happens on Windows, there is no Mac to register:
+      #
+      #   error: Your team has no devices from which to generate a provisioning profile.
+      #   error: No profiles for 'com.jonathan859.remsound' were found: Xcode couldn't find
+      #          any Mac App Development provisioning profiles matching …
+      #
+      # Skipping signing here sidesteps the development profile entirely. Nothing is lost:
+      # the export step re-signs with the cloud-managed *distribution* certificate and a Mac
+      # App Store profile, and distribution profiles are not device-bound. Signing is
+      # explicitly disabled AND the style forced to manual with an empty profile, so
+      # xcodebuild does not contact Apple for provisioning at archive time at all.
+      - name: Archive (unsigned — export does the cloud signing)
         run: |
           xcodebuild archive \
             -project RemSound.xcodeproj \
@@ -362,10 +380,11 @@ jobs:
             -destination 'generic/platform=macOS' \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/RemSound.xcarchive" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
-            -authenticationKeyID "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
-            -authenticationKeyIssuerID "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE_SPECIFIER="" \
             DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
             MARKETING_VERSION="${{ steps.version.outputs.marketing }}" \
             CURRENT_PROJECT_VERSION="${{ steps.version.outputs.build }}"
