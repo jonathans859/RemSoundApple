@@ -34,11 +34,15 @@ name: TestFlight
 on:
   push:
     branches: [main]
-    # Docs-only pushes must not mint a TestFlight build. A push is skipped only when
-    # EVERY changed file matches; anything mixing code and docs still builds.
+    # Docs-only and CI-only pushes must not mint a TestFlight build. A push is skipped
+    # only when EVERY changed file matches; anything mixing code and these still builds.
+    # ".github/workflows/**" covers CI-only edits (e.g. a timeout tweak or a caching
+    # change to this very file) that don't touch the app — those shouldn't ship a new
+    # internal-tester build with no user-visible change.
     paths-ignore:
       - "**.md"
       - ".claude/**"
+      - ".github/workflows/**"
       - "LICENSE"
       - ".gitignore"
   release:
