@@ -451,14 +451,14 @@ public struct ReceiverRootView: View {
                 .accessibilityHint("Plays a sound when a peer connects or disconnects")
 
 #if os(iOS)
-            Toggle("Exclusive audio", isOn: $controller.exclusiveAudio)
-                .accessibilityHint("Keeps audio and the connection running while the screen is locked, by taking sole control of playback. While this is on, other apps' sound is interrupted instead of mixing in.")
+            Toggle("Don't mix with other sounds", isOn: $controller.exclusiveAudio)
+                .accessibilityHint("When on, RemSound interrupts other apps' audio and is interrupted by them, which also helps keep RemSound running while the screen is locked. When off, RemSound and other apps' sound can play at the same time.")
 #endif
         } header: {
             Text("Playback")
         } footer: {
 #if os(iOS)
-            Text("Exclusive audio keeps RemSound running while the screen is locked; the trade-off is that other apps' audio is interrupted while receiving.")
+            Text("On: RemSound won't play alongside other sounds — whichever one starts, the other stops. This also tends to keep RemSound running while the screen is locked. Off: other apps' sound can play at the same time as RemSound.")
 #else
             EmptyView()
 #endif
