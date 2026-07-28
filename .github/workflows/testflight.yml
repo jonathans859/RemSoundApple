@@ -275,12 +275,28 @@ jobs:
 
       - name: Upload to TestFlight (internal testers via automatic distribution)
         if: github.event_name == 'push'
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           # changelog + skip_waiting together: pilot waits only until the build APPEARS in
           # App Store Connect, sets "What to Test", then skips the rest of the processing
           # wait. The internal group's automatic-distribution flag delivers the build once
           # Apple finishes processing — no group assignment is needed here.
-          CHANGELOG="$(git log -1 --pretty=%s)"
+          #
+          # EVERY subject in the push, not just the head commit. A push is usually several
+          # commits and the head one is routinely the least interesting — a docs or
+          # CLAUDE.md commit riding along behind the actual change. Build 85.0.1 shipped
+          # both macOS audio fixes labelled "Record the macOS audio-device pitfalls in
+          # CLAUDE.md" for exactly that reason. `paths-ignore` above is what stops a
+          # docs-ONLY push from building at all; it can't help with a mixed push.
+          #
+          # PUSH_BEFORE is all-zeros on the first push to a branch and stale after a
+          # force-push — fall back to the head subject whenever the range is unusable.
+          CHANGELOG=""
+          if [ -n "$PUSH_BEFORE" ] && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+            CHANGELOG="$(git log --reverse --pretty='- %s' "$PUSH_BEFORE..$GITHUB_SHA")"
+          fi
+          [ -n "$CHANGELOG" ] || CHANGELOG="$(git log -1 --pretty=%s)"
           fastlane pilot upload \
             --ipa "${{ steps.version.outputs.ipa }}" \
             --api_key_path "$RUNNER_TEMP/asc/api_key.json" \
@@ -498,8 +514,15 @@ jobs:
 
       - name: Upload to TestFlight (internal testers via automatic distribution)
         if: github.event_name == 'push'
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
-          CHANGELOG="$(git log -1 --pretty=%s)"
+          # Same changelog derivation as the iOS job — see the comment there.
+          CHANGELOG=""
+          if [ -n "$PUSH_BEFORE" ] && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+            CHANGELOG="$(git log --reverse --pretty='- %s' "$PUSH_BEFORE..$GITHUB_SHA")"
+          fi
+          [ -n "$CHANGELOG" ] || CHANGELOG="$(git log -1 --pretty=%s)"
           fastlane pilot upload \
             --app_platform osx \
             --pkg "${{ steps.version.outputs.pkg }}" \
