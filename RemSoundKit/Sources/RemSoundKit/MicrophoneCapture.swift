@@ -24,8 +24,10 @@ public struct AudioInputDevice: Identifiable, Hashable, Sendable {
 /// stereo float to `onSamples` (called on the dedicated drain thread). Sample-rate and
 /// channel conversion happen here, so the send engine only ever sees the wire mix format.
 ///
-/// Capture topology: `AVAudioSinkNode` (realtime thread, hardware quanta ~5 ms) →
-/// lock-free `CaptureRingBuffer` → drain thread (converts and forwards in 10 ms units).
+/// Capture topology: realtime callback (hardware quanta ~5 ms) → lock-free
+/// `CaptureRingBuffer` → drain thread (converts and forwards in 10 ms units). The callback
+/// is an `AVAudioSinkNode` on iOS and an input-only AUHAL (`CoreAudioInputUnit`) on macOS —
+/// AVAudioEngine cannot select an input device there without moving its output binding too.
 /// NOT `installTap` — iOS clamps tap buffers to ~100 ms regardless of the requested size,
 /// which made outbound Opus packets leave in ten-packet bursts every 100 ms and forced the
 /// Windows receiver up to a ~200 ms jitter buffer. The sink block runs realtime: it may
@@ -34,7 +36,7 @@ public struct AudioInputDevice: Identifiable, Hashable, Sendable {
 ///
 /// iOS: the audio session category must already allow recording (`AudioOutput.setRecordingMode`)
 /// before `start()`. Input selection goes through `AVAudioSession.setPreferredInput` /
-/// `setPreferredDataSource`. macOS: the device is set directly on the input unit.
+/// `setPreferredDataSource`. macOS: the device is bound on our own input-only AUHAL.
 public final class MicrophoneCapture {
     /// 48 kHz interleaved stereo float; second parameter is the sample-frame count.
     public var onSamples: ((UnsafePointer<Float>, Int) -> Void)?
@@ -47,10 +49,16 @@ public final class MicrophoneCapture {
 
     public private(set) var isRunning = false
 
+#if os(iOS)
     private var engine: AVAudioEngine?
+    private var sinkNode: AVAudioSinkNode?
+#else
+    /// macOS captures through an input-only AUHAL instead of AVAudioEngine — see
+    /// `CoreAudioInputUnit` for why the engine cannot be used to pick an input device here.
+    private var inputUnit: CoreAudioInputUnit?
+#endif
     private var converter: AVAudioConverter?
     private var convertedBuffer: AVAudioPCMBuffer?
-    private var sinkNode: AVAudioSinkNode?
     private var ringBuffer: CaptureRingBuffer?
     /// Hardware-rate staging buffer the drain thread refills from the ring (one 10 ms
     /// quantum); also the converter's input. Drain-thread only while running.
@@ -163,14 +171,20 @@ public final class MicrophoneCapture {
 
         applyPreferredInputPreStart()
 
+        // The capture SOURCE differs per platform (AVAudioEngine on iOS, an input-only AUHAL
+        // on macOS); everything downstream of the ring is shared.
+#if os(iOS)
         let engine = AVAudioEngine()
         let input = engine.inputNode
-#if os(macOS)
-        try applyPreferredDevice(to: input)
-#endif
-
         let hardwareFormat = input.outputFormat(forBus: 0)
-        guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0 else {
+        let hwSampleRate = hardwareFormat.sampleRate
+        let hwChannels = Int(hardwareFormat.channelCount)
+#else
+        let unit = try CoreAudioInputUnit(deviceId: preferredDeviceId())
+        let hwSampleRate = unit.sampleRate
+        let hwChannels = unit.channelCount
+#endif
+        guard hwSampleRate > 0, hwChannels > 0 else {
             throw NSError(domain: "RemSound", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "No audio input is available"])
         }
@@ -182,13 +196,12 @@ public final class MicrophoneCapture {
         // Converter SOURCE is the ring's layout: interleaved hardware-rate float (mono
         // keeps the single-plane layout, which is byte-identical). AVAudioConverter is
         // fine with interleaved formats — pitfall 1 applies to engine node connections.
-        let hwChannels = Int(hardwareFormat.channelCount)
-        let targetChannels: AVAudioChannelCount = hardwareFormat.channelCount == 1 ? 1 : 2
-        let quantumFrames = max(Int(hardwareFormat.sampleRate / 100), 120) // 10 ms of hw audio
+        let targetChannels: AVAudioChannelCount = hwChannels == 1 ? 1 : 2
+        let quantumFrames = max(Int(hwSampleRate / 100), 120) // 10 ms of hw audio
         guard
             let stagingFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32, sampleRate: hardwareFormat.sampleRate,
-                channels: hardwareFormat.channelCount, interleaved: hwChannels > 1),
+                commonFormat: .pcmFormatFloat32, sampleRate: hwSampleRate,
+                channels: AVAudioChannelCount(hwChannels), interleaved: hwChannels > 1),
             let targetFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32, sampleRate: Self.wireSampleRate,
                 channels: targetChannels, interleaved: true),
@@ -205,13 +218,14 @@ public final class MicrophoneCapture {
         convertedBuffer = converted
         hardwareInputBuffer = staging
         drainQuantumFrames = quantumFrames
-        hardwareSampleRate = hardwareFormat.sampleRate
+        hardwareSampleRate = hwSampleRate
 
-        // The realtime sink block may only copy + signal — no locks, no allocation, no
+        // The realtime capture block may only copy + signal — no locks, no allocation, no
         // self capture. Everything heavier happens on the drain thread.
         let ring = CaptureRingBuffer(
-            capacityFrames: Int(hardwareFormat.sampleRate * 0.4), channels: hwChannels)
+            capacityFrames: Int(hwSampleRate * 0.4), channels: hwChannels)
         let wakeups = DispatchSemaphore(value: 0)
+#if os(iOS)
         let sink = AVAudioSinkNode { _, frameCount, audioBufferList in
             ring.write(bufferList: audioBufferList, frames: Int(frameCount))
             wakeups.signal()
@@ -232,6 +246,30 @@ public final class MicrophoneCapture {
         }
         self.engine = engine
         sinkNode = sink
+#else
+        unit.onAudio = { bufferList, frames in
+            ring.write(bufferList: bufferList, frames: frames)
+            wakeups.signal()
+        }
+        // The AUHAL equivalent of .AVAudioEngineConfigurationChange: the bound device changed
+        // rate, or the default input moved under a "Default" selection. Either way the
+        // converter and ring are sized to the old format — rebuild.
+        unit.onDeviceChanged = { [weak self] in
+            guard let self, self.isRunning else { return }
+            self.onDiagnostic?("microphone configuration changed — restarting capture")
+            self.stop()
+            try? self.start()
+        }
+        do {
+            try unit.start()
+        } catch {
+            self.converter = nil
+            convertedBuffer = nil
+            hardwareInputBuffer = nil
+            throw error
+        }
+        inputUnit = unit
+#endif
         ringBuffer = ring
         drainSemaphore = wakeups
         isRunning = true
@@ -249,8 +287,10 @@ public final class MicrophoneCapture {
         thread.start()
         drainThread = thread
 
+#if os(iOS)
         // Route/format changes (AirPods picked up, device unplugged) invalidate the sink
-        // connection format and converter — rebuild the capture graph.
+        // connection format and converter — rebuild the capture graph. (macOS gets the
+        // equivalent from `CoreAudioInputUnit.onDeviceChanged`, wired above.)
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
@@ -259,9 +299,10 @@ public final class MicrophoneCapture {
             self.stop()
             try? self.start()
         }
+#endif
 
-        onDiagnostic?("microphone capture started: \(Int(hardwareFormat.sampleRate)) Hz, "
-            + "\(hardwareFormat.channelCount) channel(s)")
+        onDiagnostic?("microphone capture started: \(Int(hwSampleRate)) Hz, "
+            + "\(hwChannels) channel(s)")
     }
 
     public func stop() {
@@ -270,9 +311,15 @@ public final class MicrophoneCapture {
             NotificationCenter.default.removeObserver(configChangeObserver)
             self.configChangeObserver = nil
         }
+#if os(iOS)
         engine?.stop()
         if let sinkNode { engine?.detach(sinkNode) }
         sinkNode = nil
+#else
+        // Drop the rebuild callback before stopping: stop() is itself called from it.
+        inputUnit?.onDeviceChanged = nil
+        inputUnit?.stop()
+#endif
         // The render block no longer fires; flag + wake + join the drain thread BEFORE
         // tearing down the converter state it reads. The join is fast (the loop checks
         // the flag right after every wait/timeout) and keeps the config-change
@@ -285,7 +332,11 @@ public final class MicrophoneCapture {
             drainExitedSemaphore.wait()
             drainThread = nil
         }
+#if os(iOS)
         engine = nil
+#else
+        inputUnit = nil
+#endif
         converter = nil
         convertedBuffer = nil
         hardwareInputBuffer = nil
@@ -388,21 +439,18 @@ public final class MicrophoneCapture {
         let name: String
     }
 
-    private func applyPreferredDevice(to input: AVAudioInputNode) throws {
-        guard let preferredInputId else { return }
+    /// The Core Audio device to capture from, or nil for the system default input — which is
+    /// also what an unplugged/renamed selection falls through to.
+    ///
+    /// This is the whole macOS device-selection surface now. It used to set
+    /// `kAudioOutputUnitProperty_CurrentDevice` on AVAudioEngine's input node, which on macOS
+    /// is the SAME I/O unit as its output node, so picking a mic moved the engine's output
+    /// binding too — see `CoreAudioInputUnit` for the full story.
+    private func preferredDeviceId() -> AudioDeviceID? {
+        guard let preferredInputId else { return nil }
         let parts = preferredInputId.split(separator: "|").map(String.init)
-        guard parts.count == 2, parts[0] == "dev",
-              let device = Self.coreAudioInputDevices().first(where: { $0.uid == parts[1] }),
-              let unit = input.audioUnit
-        else { return } // device unplugged → fall through to the system default input
-        var deviceId = device.id
-        let status = AudioUnitSetProperty(
-            unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-            &deviceId, UInt32(MemoryLayout<AudioDeviceID>.size))
-        if status != noErr {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [
-                NSLocalizedDescriptionKey: "Could not select the input device \(device.name)"])
-        }
+        guard parts.count == 2, parts[0] == "dev" else { return nil }
+        return Self.coreAudioInputDevices().first(where: { $0.uid == parts[1] })?.id
     }
 
     private static func coreAudioInputDevices() -> [CoreAudioDevice] {
