@@ -49,6 +49,9 @@ public final class AudioOutput {
 
     public func start() throws {
         guard !isRunning else { return }
+        // The media-services-reset path re-enters start() with isRunning already cleared, so
+        // drop the previous engine's observers before a new set goes on.
+        removeObservers()
 
 #if os(iOS)
         let session = AVAudioSession.sharedInstance()
@@ -104,6 +107,7 @@ public final class AudioOutput {
         self.engine = engine
         self.sourceNode = source
         isRunning = true
+        installEngineObservers()
         onDiagnostic?("audio output started")
     }
 
@@ -119,8 +123,8 @@ public final class AudioOutput {
         renderScratch = nil
         renderFormat = nil
         isRunning = false
+        removeObservers()
 #if os(iOS)
-        removeSessionObservers()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 #endif
         onDiagnostic?("audio output stopped")
@@ -208,8 +212,9 @@ public final class AudioOutput {
         }
     }
 
+    /// iOS-only session observers. Purely additive — `start()` does the clearing, so this
+    /// can never wipe the cross-platform engine observers installed alongside it.
     private func installSessionObservers() {
-        removeSessionObservers()
         let center = NotificationCenter.default
 
         observers.append(center.addObserver(
@@ -257,20 +262,6 @@ public final class AudioOutput {
             self?.resumeEngine("audio restarted after route change")
         })
 
-        // The engine stops itself on a configuration change (route/format change while the
-        // engine is running, e.g. when another app's audio starts or ends around an app
-        // switch) and does NOT auto-restart — a common cause of "audio just stopped". Its
-        // connections may be invalidated, so reconnect the graph before restarting.
-        observers.append(center.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main
-        ) { [weak self] _ in
-            guard let self, self.isRunning,
-                  let engine = self.engine, !engine.isRunning,
-                  let source = self.sourceNode, let format = self.renderFormat else { return }
-            engine.connect(source, to: engine.mainMixerNode, format: format)
-            self.resumeEngine("audio restarted after configuration change")
-        })
-
         // Returning to the foreground: reassert the session and restart the engine if it was
         // left paused. This is the safety net for interruptions that end without a
         // .shouldResume flag (e.g. after another media app held focus), which is exactly the
@@ -282,22 +273,6 @@ public final class AudioOutput {
         })
     }
 
-    /// Reassert the audio session and restart the engine if it is not already running. Safe
-    /// to call from any of the recovery notifications; a no-op when the engine is healthy.
-    private func resumeEngine(_ diagnostic: String) {
-        guard isRunning, let engine, !engine.isRunning else { return }
-        try? AVAudioSession.sharedInstance().setActive(true)
-        engine.prepare()
-        try? engine.start()
-        onDiagnostic?(diagnostic)
-    }
-
-    private func removeSessionObservers() {
-        for observer in observers {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        observers.removeAll()
-    }
 #else
     /// macOS has no AVAudioSession — exclusive audio is an iOS-only concept; accept and
     /// ignore so the shared controller doesn't need platform conditionals.
@@ -307,4 +282,52 @@ public final class AudioOutput {
     /// the adaptive-cadence lever is iOS-only; accept and ignore for a uniform controller API.
     public func setLowLatencyDemand(_ demand: Bool) {}
 #endif
+
+    // MARK: - Engine recovery (both platforms)
+
+    /// The engine stops itself on a configuration change and does NOT auto-restart — the
+    /// single most common cause of "audio just stopped". Its connections may be invalidated,
+    /// so the graph is reconnected before restarting.
+    ///
+    /// This MUST stay cross-platform. On iOS the trigger is a route/format change (another
+    /// app's audio starting or ending around an app switch); on macOS it is any Core Audio
+    /// device change — the output device going away, the system default output moving, or
+    /// another engine in this process rebinding a device. macOS has no AVAudioSession and
+    /// therefore none of the other recovery notifications, so without this observer a Mac
+    /// that switches audio devices loses playback permanently while `isRunning` still
+    /// reports true. (It lived inside the iOS-only block until 2026-07-28; a Mac that
+    /// changed its input device went silent until relaunch.)
+    private func installEngineObservers() {
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.isRunning,
+                  let engine = self.engine, !engine.isRunning,
+                  let source = self.sourceNode, let format = self.renderFormat else { return }
+            // Reconnect at OUR fixed 48 kHz render format — the new device may run at a
+            // different rate, and the engine resamples mainMixer → output for us.
+            engine.connect(source, to: engine.mainMixerNode, format: format)
+            self.resumeEngine("audio restarted after configuration change")
+        })
+    }
+
+    /// Restart the engine if it is not already running (reasserting the audio session first
+    /// on iOS). Safe to call from any recovery notification; a no-op when the engine is
+    /// healthy or when playback is stopped.
+    private func resumeEngine(_ diagnostic: String) {
+        guard isRunning, let engine, !engine.isRunning else { return }
+#if os(iOS)
+        try? AVAudioSession.sharedInstance().setActive(true)
+#endif
+        engine.prepare()
+        try? engine.start()
+        onDiagnostic?(diagnostic)
+    }
+
+    private func removeObservers() {
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        observers.removeAll()
+    }
 }
