@@ -157,7 +157,28 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
     3 s OR healthy heartbeat; lost = no audio AND heartbeat unreachable ~5 s; in between
     holds state) — a bare audio-window check fires false disconnect+connect pairs on
     2-second Wi-Fi/VPN stalls (`ReceiverController.updateCues`).
-11. Row operations vs VoiceOver: `.contextMenu` is NOT reliably exposed to VoiceOver
+11. **macOS AVAudioEngine has ONE HAL I/O unit shared by its input and output nodes**, so
+    `kAudioOutputUnitProperty_CurrentDevice` on `inputNode.audioUnit` repoints the OUTPUT
+    element too — selecting a mic killed the user's AirPods playback (2026-07-28). macOS
+    capture therefore runs on its own input-only AUHAL (`CoreAudioInputUnit`, element 0
+    disabled before the device is bound); never select a device through the engine. iOS is
+    unaffected — `AVAudioSession.setPreferredInput` is route-level. Consequence: there is no
+    `.AVAudioEngineConfigurationChange` for macOS capture, so the unit watches the device's
+    nominal sample rate (plus the default-input device when the selection is "Default") and
+    triggers the same stop/start rebuild.
+12. **Engine recovery must never be nested inside `#if os(iOS)`.** `AVAudioEngine` stops
+    itself on a configuration change and does not restart; on macOS that notification is the
+    ONLY recovery signal (no AVAudioSession, so no interruption/route/media-reset observers
+    to act as a backstop) and it fires for any Core Audio device change. It sat in the iOS
+    block until 2026-07-28, which left a Mac silently dead — `isRunning` still true — after
+    any device change. Reconnect the graph at OUR render format before restarting.
+13. Bluetooth mics are a trap for a streaming app: opening a headset's mic drops the link
+    into handsfree mode, so the mic arrives at 16/24 kHz on the Bluetooth clock AND the
+    headset's own output degrades. Symptoms look unrelated to Bluetooth — the *remote* end
+    hears periodic clicks from the clock drift (we have no send-side drift compensation)
+    while local monitoring is clean, and the receive-side jitter buffer logs underruns and
+    trims in the same minute. Diagnose by retesting on built-in speakers.
+14. Row operations vs VoiceOver: `.contextMenu` is NOT reliably exposed to VoiceOver
     (macOS especially), so every row operation must ALSO be an explicit
     `.accessibilityAction(named:)` on the element VoiceOver focuses. `.swipeActions`,
     however, ARE auto-exposed as VO custom actions on iOS — combining them with explicit
@@ -198,7 +219,7 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   traffic rates as its accessibility value, `controller.trafficSummary`), **Send &
   Receive** = receive toggle/mic send/password, **Audio** = playback options,
   **Profiles** = saved snapshots (apply = row tap; update/rename/delete = context menu +
-  VoiceOver actions, no swipe — pitfall 11; the drift-checked `controller.appliedProfile` drives a "Currently applied" row
+  VoiceOver actions, no swipe — pitfall 14; the drift-checked `controller.appliedProfile` drives a "Currently applied" row
   marker and the tab bar item's accessibility value — marker only while the live config
   exactly matches the snapshot); a persistent
   top-right About button opens `AboutView.swift`, which links to this repo and the
