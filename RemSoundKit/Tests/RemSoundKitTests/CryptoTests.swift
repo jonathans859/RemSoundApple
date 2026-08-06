@@ -76,4 +76,48 @@ final class CryptoTests: XCTestCase {
         XCTAssertNil(decryptor.tryDecrypt(packet[...]))
         XCTAssertNil(decryptor.tryDecrypt(packet[0..<10])) // shorter than overhead
     }
+
+    /// Counter nonces (mirroring the Windows sender): unique by arithmetic, not by chance.
+    /// Nonce reuse under one AES-GCM key is catastrophic, so this pins both halves of the
+    /// rule — no repeat within a key, and a fresh sequence whenever the key is rebuilt.
+    func testEncryptorNoncesNeverRepeatAndRestartWithTheKey() throws {
+        let encryptor = AudioEncryptor()
+        encryptor.ensureKey(RemSoundCrypto.deriveKey(password: "test123"))
+
+        func nonce(_ packet: [UInt8]) -> [UInt8] { Array(packet[0..<RemSoundCrypto.nonceBytes]) }
+
+        var seen = Set<[UInt8]>()
+        var first: [UInt8] = []
+        for i in 0..<2000 {
+            let n = nonce(try XCTUnwrap(encryptor.tryEncrypt([UInt8]([1, 2, 3, 4])[...])))
+            XCTAssertEqual(n.count, RemSoundCrypto.nonceBytes)
+            if i == 0 { first = n }
+            XCTAssertTrue(seen.insert(n).inserted, "nonce repeated at packet \(i)")
+        }
+        // The 48-bit prefix is constant while the key is; only the counter half advances.
+        XCTAssertTrue(seen.allSatisfy { Array($0.prefix(6)) == Array(first.prefix(6)) })
+
+        // A rebuilt key restarts the counter at 0, so a new random prefix is what keeps the
+        // new sequence away from the old one.
+        encryptor.ensureKey(RemSoundCrypto.deriveKey(password: "different"))
+        let afterRekey = nonce(try XCTUnwrap(encryptor.tryEncrypt([UInt8]([1, 2, 3, 4])[...])))
+        XCTAssertNotEqual(Array(afterRekey.prefix(6)), Array(first.prefix(6)))
+        XCTAssertEqual(Array(afterRekey.suffix(6)), [0, 0, 0, 0, 0, 0])
+    }
+
+    /// Counter nonces must not disturb the wire layout the receiver expects.
+    func testCounterNonceStillRoundTripsThroughTheDecryptor() throws {
+        let keyBytes = RemSoundCrypto.deriveKey(password: "test123")
+        let encryptor = AudioEncryptor()
+        encryptor.ensureKey(keyBytes)
+        let decryptor = AudioDecryptor()
+        decryptor.ensureKey(keyBytes)
+
+        let plaintext = [UInt8](repeating: 0x5A, count: 240)
+        for _ in 0..<3 {
+            let packet = try XCTUnwrap(encryptor.tryEncrypt(plaintext[...]))
+            XCTAssertEqual(packet.count, plaintext.count + RemSoundCrypto.encryptionOverheadBytes)
+            XCTAssertEqual(decryptor.tryDecrypt(packet[...]), plaintext)
+        }
+    }
 }

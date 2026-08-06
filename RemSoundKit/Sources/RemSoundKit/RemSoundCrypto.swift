@@ -81,10 +81,52 @@ struct SymmetricKeyCache {
     private(set) var key: SymmetricKey?
     private var keyBytesCached: [UInt8]?
 
-    mutating func ensure(_ keyBytes: [UInt8]?) {
-        if keyBytesCached == keyBytes { return }
+    /// True when the key was actually rebuilt, so callers that hang state off the cipher
+    /// (the send-side nonce sequence) know to reset it.
+    @discardableResult
+    mutating func ensure(_ keyBytes: [UInt8]?) -> Bool {
+        if keyBytesCached == keyBytes { return false }
         keyBytesCached = keyBytes
         key = keyBytes.map { SymmetricKey(data: $0) }
+        return true
+    }
+}
+
+/// Nonce source for one encryptor: a random 48-bit prefix drawn when the cipher is built,
+/// then a 48-bit little-endian counter — mirroring the Windows `RemSoundCrypto.NonceSequence`
+/// (their 2026-07-26 audit). Uniqueness WITHIN an instance is arithmetic rather than
+/// probabilistic; ACROSS instances (every launch and key rebuild restarts the counter at 0
+/// under the same long-lived audio key) the random prefix keeps the ranges apart. That is the
+/// point: 2^48 packets is unreachable, whereas a 96-bit random nonce's birthday bound is
+/// something a heavy multi-day sender can actually approach.
+///
+/// Free on both budgets — the nonce is still the same 12 bytes on the wire, and this replaces
+/// a CSPRNG draw per packet with a copy and an increment. Not thread-safe: one per encryptor,
+/// same ownership rule as the key itself.
+struct NonceSequence {
+    private static let prefixBytes = 6
+    private var prefix = [UInt8](repeating: 0, count: NonceSequence.prefixBytes)
+    private var counter: UInt64 = 0
+
+    init() { reset() }
+
+    /// Fresh prefix, counter back to zero — called whenever the cipher key is rebuilt, so a
+    /// new key never inherits an old counter and an old key never sees a repeated nonce.
+    mutating func reset() {
+        for i in 0..<Self.prefixBytes { prefix[i] = UInt8.random(in: 0...255) }
+        counter = 0
+    }
+
+    /// prefix(6) ‖ counter(6, little-endian). The counter's top 16 bits are never used;
+    /// 2^48 packets at our rates is tens of thousands of years, so it cannot wrap in practice.
+    mutating func next() -> [UInt8] {
+        var nonce = prefix
+        let c = counter
+        counter &+= 1
+        for i in 0..<(RemSoundCrypto.nonceBytes - Self.prefixBytes) {
+            nonce.append(UInt8((c >> (8 * UInt64(i))) & 0xFF))
+        }
+        return nonce
     }
 }
 
@@ -95,22 +137,28 @@ struct SymmetricKeyCache {
 /// capture/encode thread.
 public final class AudioEncryptor {
     private var keyCache = SymmetricKeyCache()
+    private var nonces = NonceSequence()
 
     public init() {}
 
     public var hasKey: Bool { keyCache.key != nil }
 
-    /// Rebuild the cipher key if the raw key bytes changed.
+    /// Rebuild the cipher key if the raw key bytes changed, restarting the nonce sequence
+    /// with it (see `NonceSequence.reset`).
     public func ensureKey(_ keyBytes: [UInt8]?) {
-        keyCache.ensure(keyBytes)
+        if keyCache.ensure(keyBytes) { nonces.reset() }
     }
 
     /// Encrypt a plaintext into the `nonce(12) || tag(16) || ciphertext` wire layout.
     /// Nil when no key is set (no password — mandatory encryption means nothing is sent)
-    /// or on a CryptoKit failure.
+    /// or on a CryptoKit failure. The nonce is counter-based, not CryptoKit's per-call
+    /// random one — same 12 bytes on the wire, and the receiver just reads it off the packet.
     public func tryEncrypt(_ plaintext: ArraySlice<UInt8>) -> [UInt8]? {
         guard let key = keyCache.key else { return nil }
-        guard let box = try? AES.GCM.seal(Data(plaintext), using: key) else { return nil }
+        guard
+            let nonce = try? AES.GCM.Nonce(data: Data(nonces.next())),
+            let box = try? AES.GCM.seal(Data(plaintext), using: key, nonce: nonce)
+        else { return nil }
         var packet = [UInt8]()
         packet.reserveCapacity(plaintext.count + RemSoundCrypto.encryptionOverheadBytes)
         packet.append(contentsOf: box.nonce)

@@ -48,9 +48,11 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   interop is broken. The iteration count is a **cross-port** contract: upstream v5.6 raised
   it to 600 000 for one day and broke this port outright; v5.7 reverted to 100 000 and
   annotated the constant "MUST stay 100k". Never mirror an iteration-count change without
-  the user confirming every port moves together. (Windows-only, deliberately NOT mirrored:
-  5.6's weak-password block — also reverted in 5.7 — and its per-sender counter nonces,
-  which are a sender-side hardening choice the receiver can't observe.)
+  the user confirming every port moves together. (5.6's weak-password block, also reverted
+  in 5.7, is deliberately NOT mirrored.) Send-side nonces are **counter-based** like the
+  Windows sender — random 48-bit prefix per key ‖ 48-bit counter (`NonceSequence`, reset on
+  every key rebuild), never CryptoKit's per-call random nonce. Wire-invisible (the receiver
+  reads the nonce off the packet) and cheaper than a CSPRNG draw per packet.
 - **PCM**: whole int24-LE frame encrypted, then split into ≤1454-byte parts with a 6-byte
   sub-header → reassemble **then** decrypt; parts arrive in order, missing part = drop frame.
 - **Opus**: per-packet decrypt → libopus decode; on a single-packet gap decode the next
