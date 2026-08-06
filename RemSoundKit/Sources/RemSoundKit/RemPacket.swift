@@ -17,7 +17,15 @@ public enum RemPacketType: UInt8 {
     case heartbeat = 4
     /// Remote-control message (volume nudges). Not handled by this receiver in v1 —
     /// parsed and dropped, same wire-safety contract as old Windows peers.
+    /// (Windows 5.6+ seals this payload with the audio key; we ignore it either way.)
     case control = 5
+    // 6-9 are the relay's v2 lobby types (hello / roster / full / bye) — out of scope.
+    /// Relay address-proof challenge (upstream 2026-07-27, server-v2.5). The relay sends a
+    /// random cookie to every newly seen client address; echoing the packet back verbatim
+    /// proves the address really receives, which is what kills the reflection attack. The
+    /// relay currently runs this watch-only, but once it flips `--require-addr-check` an
+    /// endpoint that never echoes gets ALL forwarded traffic withheld — so we must answer.
+    case addrCheck = 10
 }
 
 public enum HeartbeatKind: UInt8 {

@@ -45,7 +45,12 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   (32-byte key) / `"RemSound.v1.fingerprint"` (8 bytes). AES-256-GCM packet layout is
   **`nonce(12) ‖ tag(16) ‖ ciphertext`** — CryptoKit's `combined` is nonce‖ct‖tag, do NOT
   use it. Cross-impl PBKDF2 vectors are pinned in `CryptoTests.swift`; if they fail,
-  interop is broken.
+  interop is broken. The iteration count is a **cross-port** contract: upstream v5.6 raised
+  it to 600 000 for one day and broke this port outright; v5.7 reverted to 100 000 and
+  annotated the constant "MUST stay 100k". Never mirror an iteration-count change without
+  the user confirming every port moves together. (Windows-only, deliberately NOT mirrored:
+  5.6's weak-password block — also reverted in 5.7 — and its per-sender counter nonces,
+  which are a sender-side hardening choice the receiver can't observe.)
 - **PCM**: whole int24-LE frame encrypted, then split into ≤1454-byte parts with a 6-byte
   sub-header → reassemble **then** decrypt; parts arrive in order, missing part = drop frame.
 - **Opus**: per-packet decrypt → libopus decode; on a single-packet gap decode the next
@@ -57,6 +62,11 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 - **Heartbeat**: 1 Hz ping, streamId 0xFFFF, payload = kind byte + int64 LE monotonic ms
   echoed verbatim in the pong. Pongs match peers **by IP only**. Heartbeats leave the same
   socket audio arrives on (shared NAT pinhole; also claims our relay slot).
+- **Relay address-proof** (type **10**, upstream server-v2.5): the relay cookies each newly
+  seen client address; echo the packet back **verbatim to its source**, from the audio socket,
+  and **ungated by the allow-list** (the challenge comes from the relay, not a selected peer).
+  Watch-only upstream today — when the relay flips `--require-addr-check`, a client that never
+  echoes has all forwarded traffic withheld. Pinned by `AddrCheckTests`.
 - **Allow-list**: gate audio/format by source **IP**, not port. Sessions keyed
   (endpoint, streamId); on a new streamId from the same peer, supersede old sessions
   **only if the lane matches** (BothIndependent senders run two lanes per peer).
@@ -119,7 +129,10 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   `.ios` 2026-07-03; macOS renamed from `.mac` 2026-07-11 — both pre-ship). The macOS
   target is App-Sandboxed (`Apps/macOS/RemSound.entitlements`: network client + server,
   audio input) — required for Mac App Store/TestFlight; never remove the sandbox.
-- Password in Keychain. Control packets (type 5) parsed and ignored.
+- Password in Keychain. Control packets (type 5) parsed and ignored — upstream 5.6 sealed
+  that payload with the audio key (2 plaintext bytes → 38 sealed), which changes nothing
+  here while we ignore it; implementing remote volume control would mean adopting
+  `ControlSealing` (seal + 10-min skew window + nonce replay memory), not the old 2-byte form.
 - Opus via SPM `alta/swift-opus` pinned `exact: "0.0.2"` (raw C API needed for the FEC flag).
 - **Screen-reader accessibility is the top priority**: every control labeled, status lines
   are plain sentences, audio start/stop fires cues + a VoiceOver announcement (iOS).

@@ -197,6 +197,14 @@ public final class AudioReceiverEngine {
                         payload: buffer[RemPacket.headerSize..<length])
         case .heartbeat:
             onHeartbeatReceived?(buffer, length, remote)
+        case .addrCheck:
+            // Relay address-proof: echo the packet back to its source, verbatim, from this
+            // same socket. Deliberately NOT gated on the allow-list — the challenge comes from
+            // the relay, which the user need not have selected as a peer, and refusing to echo
+            // costs us every relayed stream once the relay enforces. Safe to answer blind: the
+            // reply is byte-identical to what arrived and goes only to the sender's own address,
+            // so it can neither amplify nor be aimed at a third party.
+            sendFromAudioSocket(Array(buffer[0..<length]), to: remote)
         case .keepAlive, .control:
             break // legacy / not handled in v1 — silently ignored, wire-safe
         }

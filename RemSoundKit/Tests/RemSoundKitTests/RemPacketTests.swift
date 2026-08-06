@@ -34,6 +34,15 @@ final class RemPacketTests: XCTestCase {
         XCTAssertNil(RemPacket.readHeader([0x52, 0x4D], length: 2))
     }
 
+    func testAddrCheckTypeIsParsedNotDropped() {
+        // Type 10 = the relay's address-proof challenge (upstream server-v2.5). It must survive
+        // header parsing: an unknown type is dropped here, and a client that never echoes loses
+        // ALL relayed traffic once the relay turns on --require-addr-check.
+        var bytes = [UInt8](RemPacket.writeHeader(type: .audio, streamId: 1, sequence: 0))
+        bytes[5] = 10
+        XCTAssertEqual(RemPacket.readHeader(bytes, length: bytes.count)?.type, .addrCheck)
+    }
+
     func testStreamIdZeroCoercesToOne() {
         var bytes = [UInt8](RemPacket.writeHeader(type: .audio, streamId: 5, sequence: 0))
         bytes[6] = 0
