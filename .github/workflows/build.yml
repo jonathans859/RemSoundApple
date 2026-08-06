@@ -41,7 +41,7 @@ jobs:
       - name: Zip app
         run: ditto -c -k --keepParent build/Build/Products/Release/RemSound.app RemSound-macOS-unsigned.zip
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: RemSound-macOS-unsigned
           path: RemSound-macOS-unsigned.zip
@@ -66,7 +66,7 @@ jobs:
           cp -R build/Build/Products/Release-iphoneos/RemSound.app Payload/
           zip -qry RemSound-iOS-unsigned.ipa Payload
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: RemSound-iOS-unsigned
           path: RemSound-iOS-unsigned.ipa
