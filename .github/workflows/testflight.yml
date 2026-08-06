@@ -142,7 +142,7 @@ jobs:
       # repo's Actions cache — it cannot distribute anything; the distribution key never
       # leaves Apple.
       - name: Reuse the CI signing keychain across runs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/Library/Keychains/ci-signing.keychain-db
           key: ci-signing-keychain-${{ github.run_id }}-${{ github.run_attempt }}-ios
@@ -352,7 +352,7 @@ jobs:
       # share the restore-keys prefix, so either platform's keychain (each holding a
       # reusable Apple Development identity) unblocks the other.
       - name: Reuse the CI signing keychain across runs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/Library/Keychains/ci-signing.keychain-db
           key: ci-signing-keychain-${{ github.run_id }}-${{ github.run_attempt }}-macos
