@@ -536,7 +536,7 @@ public final class ReceiverController {
     public func deleteProfile(id: UUID) {
         guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
         let name = profiles[index].name
-        profileStore.setPassword("", forProfile: id) // removes the Keychain item
+        profileStore.removePassword(forProfile: id) // the one path that may remove it
         profiles.remove(at: index)
         profileStore.profiles = profiles
         // Deleting is the ONE path that removes the profile from iCloud, so that a device

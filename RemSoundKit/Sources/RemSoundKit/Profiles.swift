@@ -83,12 +83,20 @@ public final class ProfileStore {
         Keychain.read(account: Self.passwordAccount(id))
     }
 
-    /// An empty password removes the Keychain item (also the cleanup path on delete).
     /// While sync is on the item is written to the synchronizable keychain, so it reaches
     /// the user's other devices end-to-end encrypted instead of riding in the profile JSON.
+    /// An empty password stores an empty item — saving a profile must never be able to
+    /// *remove* one, or a device that has not received the password yet would delete it
+    /// for every other device (see `Keychain.delete`). Removal is `removePassword`.
     public func setPassword(_ password: String, forProfile id: UUID) {
         Keychain.write(password, account: Self.passwordAccount(id),
                        synchronizable: settings.iCloudProfileSyncEnabled)
+    }
+
+    /// Drop a profile's password everywhere — the deletion travels through iCloud Keychain,
+    /// so this belongs to the delete path alone.
+    public func removePassword(forProfile id: UUID) {
+        Keychain.delete(account: Self.passwordAccount(id))
     }
 
     private static func passwordAccount(_ id: UUID) -> String {
@@ -108,7 +116,7 @@ public final class ProfileStore {
                                        remote: ProfileSync.readRemote(from: store),
                                        syncedIds: settings.syncedProfileIds)
         for id in result.deleted {
-            Keychain.write("", account: Self.passwordAccount(id))
+            removePassword(forProfile: id)
         }
         if !result.toPush.isEmpty {
             ProfileSync.push(result.toPush, to: store)
@@ -128,9 +136,10 @@ public final class ProfileStore {
     }
 
     /// Handle the sync toggle flipping. Turning it on moves every profile password into
-    /// the synchronizable keychain and publishes the current list; turning it off brings
-    /// the passwords back to this device and stops writing, leaving whatever is already
-    /// in iCloud for the user's other devices.
+    /// the synchronizable keychain and publishes the current list; turning it off copies
+    /// the passwords back to this device and stops writing, leaving both the profile JSON
+    /// and the shared Keychain items in iCloud for the user's other devices — opting out
+    /// here must never reach in and delete what those devices are running on.
     public func setSyncEnabled(_ enabled: Bool) {
         guard enabled != settings.iCloudProfileSyncEnabled else { return }
         settings.iCloudProfileSyncEnabled = enabled

@@ -180,27 +180,30 @@ public final class ReceiverSettings {
 ///
 /// The two are distinct items even with the same service + account, so every query says
 /// which one it means, and `setSynchronizable` moves an account between them.
+///
+/// **Deleting a synchronizable item is not a local act** — iCloud Keychain propagates the
+/// deletion to every device in the user's circle. Only `delete` may do it, and only an
+/// explicit user deletion may call `delete`. Writing an empty value stores an empty item;
+/// it deliberately does NOT remove anything (issue #4: a device whose live password was
+/// blank could wipe a profile's password for every other device just by saving).
 enum Keychain {
     private static let service = "com.jonathan859.remsound"
 
-    /// The attributes identifying one item. `synchronizable == nil` means "either kind",
-    /// which is only valid for lookups, never for adds.
-    private static func baseQuery(account: String, synchronizable: Bool?) -> [String: Any] {
+    /// The attributes identifying one item — one of the two flavours, never "either":
+    /// a lookup that spans both would leave it undefined which copy wins.
+    private static func baseQuery(account: String, synchronizable: Bool) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        switch synchronizable {
-        case .some(true):
+        if synchronizable {
             query[kSecAttrSynchronizable as String] = kCFBooleanTrue
             // Synchronizable items only exist in the data-protection keychain. On macOS
             // that is opt-in; on iOS it is the only keychain and the key is harmless.
             query[kSecUseDataProtectionKeychain as String] = kCFBooleanTrue
-        case .some(false):
+        } else {
             query[kSecAttrSynchronizable as String] = kCFBooleanFalse
-        case .none:
-            query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
         }
         return query
     }
@@ -208,8 +211,11 @@ enum Keychain {
     /// Reads an account regardless of which keychain flavour holds it. macOS keeps
     /// device-local items in the legacy keychain and synchronizable ones in the
     /// data-protection keychain, and no single query spans both, so this tries each.
+    ///
+    /// Device-local **first**: after the user switches sync off, this device's own copy is
+    /// what it should run on, while the shared item stays untouched for its other devices.
     static func read(account: String) -> String {
-        for synchronizable in [nil, true] as [Bool?] {
+        for synchronizable in [false, true] {
             var query = baseQuery(account: account, synchronizable: synchronizable)
             query[kSecReturnData as String] = true
             query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -223,14 +229,9 @@ enum Keychain {
         return ""
     }
 
-    /// An empty value deletes the item — in both flavours, so a stale copy left behind by
-    /// a sync toggle can never resurrect a deleted profile's password.
+    /// Stores a value — including an empty one, which is a value like any other here.
+    /// Removing an item is `delete`, never a write.
     static func write(_ value: String, account: String, synchronizable: Bool = false) {
-        if value.isEmpty {
-            SecItemDelete(baseQuery(account: account, synchronizable: true) as CFDictionary)
-            SecItemDelete(baseQuery(account: account, synchronizable: false) as CFDictionary)
-            return
-        }
         let query = baseQuery(account: account, synchronizable: synchronizable)
         let data = Data(value.utf8)
         let status = SecItemUpdate(
@@ -246,14 +247,30 @@ enum Keychain {
         }
     }
 
-    /// Move an account between the device-local and iCloud-synchronizable keychains,
-    /// preserving its value. Used when the profile-sync toggle flips: existing profile
-    /// passwords have to follow, or sync would arrive on the other device with blanks.
-    /// A no-op when the account has no value.
+    /// Remove an account's item in both flavours. The ONLY path that drops a
+    /// synchronizable item, because iCloud Keychain carries that deletion to every device
+    /// the user owns — so it must stay reachable exclusively from an explicit user
+    /// deletion (deleting a profile), never from a save or a settings toggle.
+    static func delete(account: String) {
+        SecItemDelete(baseQuery(account: account, synchronizable: true) as CFDictionary)
+        SecItemDelete(baseQuery(account: account, synchronizable: false) as CFDictionary)
+    }
+
+    /// Follow the profile-sync toggle with an account's value. A no-op when there is none.
+    ///
+    /// Switching sync **on** moves the value into the shared keychain and drops the local
+    /// copy, so the user's other devices stop seeing blanks. Switching it **off** copies
+    /// the value back to this device and deliberately leaves the shared item alone: opting
+    /// out means this device stops writing to the account, exactly as it does for the
+    /// profile JSON in the key-value store. Deleting the shared item instead — which is
+    /// what this did until issue #4 — silently blanked every profile password on the
+    /// user's other devices, unrecoverably (the re-enable path reads "" and no-ops).
     static func setSynchronizable(_ on: Bool, account: String) {
         let value = read(account: account)
         guard !value.isEmpty else { return }
-        SecItemDelete(baseQuery(account: account, synchronizable: !on) as CFDictionary)
+        if on {
+            SecItemDelete(baseQuery(account: account, synchronizable: false) as CFDictionary)
+        }
         write(value, account: account, synchronizable: on)
     }
 }

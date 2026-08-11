@@ -98,7 +98,14 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   what the password-never-in-JSON rule buys. Synchronizable items need the data-protection
   keychain (`kSecUseDataProtectionKeychain`) on macOS and are a *distinct* item from the
   device-local one with the same service+account — `Keychain.read` therefore tries both
-  flavours and `setSynchronizable` migrates on toggle. Needs the
+  flavours (device-local first, so an opted-out device runs on its own copy) and
+  `setSynchronizable` migrates on toggle. **`SecItemDelete` on a synchronizable item wipes
+  it from every device**, so `Keychain.delete` is the only thing allowed to do it and only
+  a user deleting a profile may call it: an empty password is *stored*, not deleted, and
+  switching sync off copies the value back locally while LEAVING the shared item up (fixed
+  2026-08-11, issue #4 — the old code deleted on both paths, so toggling sync off, or
+  saving a profile from a device that had not received the password yet, silently and
+  unrecoverably blanked every profile password on the user's other devices). Needs the
   `com.apple.developer.ubiquity-kvstore-identifier` entitlement on BOTH targets (this is why
   `Apps/iOS/RemSound.entitlements` exists at all — it was created for this and wired into
   the hand-written pbxproj). Local/device state deliberately does NOT sync: the live
