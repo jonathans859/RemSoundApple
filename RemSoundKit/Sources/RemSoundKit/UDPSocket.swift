@@ -67,7 +67,16 @@ public struct UDPEndpoint: Hashable, Sendable, CustomStringConvertible {
 /// `NetworkListener` design: one fixed receive buffer reused across calls, packets handed up
 /// as (buffer, length, remote) — the callback must copy anything it keeps.
 public final class UDPSocket {
-    public typealias PacketHandler = (_ buffer: [UInt8], _ length: Int, _ remote: UDPEndpoint) -> Void
+    /// `kernelArrivalNs` is the datagram's arrival time as stamped by the kernel
+    /// (`SO_TIMESTAMP`), in nanoseconds on the **wall clock**, or 0 when the kernel did not
+    /// attach one. It exists because timing packets on this thread measures the thread, not
+    /// the network: when iOS throttles a backgrounded app the receive thread is descheduled
+    /// while datagrams pile up in the socket buffer, and reading them in a burst then looks
+    /// like one enormous network gap. Measured on a 5G link, that artefact drove the latency
+    /// auto-tune to its 200 ms ceiling for traffic that had arrived evenly spaced.
+    /// Callers that mix this with a local clock must not subtract one from the other.
+    public typealias PacketHandler = (_ buffer: [UInt8], _ length: Int, _ remote: UDPEndpoint,
+                                      _ kernelArrivalNs: UInt64) -> Void
 
     private var fd: Int32 = -1
     private var thread: Thread?
@@ -102,6 +111,12 @@ public final class UDPSocket {
         var bufSize: Int32 = 1024 * 1024
         setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &bufSize, socklen_t(MemoryLayout<Int32>.size))
         setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &bufSize, socklen_t(MemoryLayout<Int32>.size))
+        // Ask the kernel to stamp each datagram with its arrival time (see PacketHandler).
+        // Best-effort: if this fails, `receiveLoop` reports 0 and callers fall back to their
+        // own clock, which is what the code did before this existed.
+        if setsockopt(sock, SOL_SOCKET, SO_TIMESTAMP, &one, socklen_t(MemoryLayout<Int32>.size)) != 0 {
+            onDiagnostic?("SO_TIMESTAMP unavailable (errno \(errno)) — arrival gaps fall back to the receive thread's clock")
+        }
 
         var sa = sockaddr_in()
         sa.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -178,27 +193,78 @@ public final class UDPSocket {
         send([UInt8](data), to: endpoint)
     }
 
+    // Darwin's CMSG_* helpers are function-like macros, which Swift does not import, so the
+    // control-message arithmetic is spelled out here. Darwin aligns control data to 4 bytes
+    // (__DARWIN_ALIGN32), NOT to the pointer size — using MemoryLayout<cmsghdr>.stride would
+    // be right by luck on 64-bit and wrong in principle.
+    private static let cmsgAlign = 4
+    private static func align32(_ n: Int) -> Int { (n + cmsgAlign - 1) & ~(cmsgAlign - 1) }
+    private static var cmsgHeaderSize: Int { align32(MemoryLayout<cmsghdr>.size) }
+    private static func cmsgLen(_ payload: Int) -> Int { cmsgHeaderSize + payload }
+    private static func cmsgSpace(_ payload: Int) -> Int { cmsgHeaderSize + align32(payload) }
+
     private func receiveLoop(socket sock: Int32) {
         var buffer = [UInt8](repeating: 0, count: 2048)
-        var from = sockaddr_in()
-        var fromLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        // msghdr / iovec / sockaddr / control block live on the heap for the whole loop rather
+        // than as locals captured by the `withUnsafeMutableBytes` closure: passing `&local` to
+        // recvmsg from inside a closure that also mutates that same local is exactly the
+        // overlapping-access pattern Swift's exclusivity checking exists to reject.
+        let controlCapacity = Self.cmsgSpace(MemoryLayout<timeval>.size)
+        let controlPtr = UnsafeMutableRawPointer.allocate(byteCount: controlCapacity, alignment: 8)
+        let msgPtr = UnsafeMutablePointer<msghdr>.allocate(capacity: 1)
+        let iovPtr = UnsafeMutablePointer<iovec>.allocate(capacity: 1)
+        let fromPtr = UnsafeMutablePointer<sockaddr_in>.allocate(capacity: 1)
+        msgPtr.initialize(to: msghdr())
+        iovPtr.initialize(to: iovec())
+        fromPtr.initialize(to: sockaddr_in())
+        defer {
+            msgPtr.deinitialize(count: 1)
+            iovPtr.deinitialize(count: 1)
+            fromPtr.deinitialize(count: 1)
+            msgPtr.deallocate()
+            iovPtr.deallocate()
+            fromPtr.deallocate()
+            controlPtr.deallocate()
+        }
 
         while true {
-            let received = buffer.withUnsafeMutableBytes { bytes in
-                withUnsafeMutablePointer(to: &from) { ptr in
-                    ptr.withMemoryRebound(to: Darwin.sockaddr.self, capacity: 1) { saPtr in
-                        recvfrom(sock, bytes.baseAddress, bytes.count, 0, saPtr, &fromLen)
-                    }
-                }
+            let received = buffer.withUnsafeMutableBytes { bytes -> Int in
+                iovPtr.pointee.iov_base = bytes.baseAddress
+                iovPtr.pointee.iov_len = bytes.count
+                msgPtr.pointee.msg_name = UnsafeMutableRawPointer(fromPtr)
+                msgPtr.pointee.msg_namelen = socklen_t(MemoryLayout<sockaddr_in>.size)
+                msgPtr.pointee.msg_iov = iovPtr
+                msgPtr.pointee.msg_iovlen = 1
+                msgPtr.pointee.msg_control = controlPtr
+                msgPtr.pointee.msg_controllen = socklen_t(controlCapacity)
+                msgPtr.pointee.msg_flags = 0
+                return recvmsg(sock, msgPtr, 0)
             }
             if received <= 0 {
                 // Socket closed (stop()) or fatal error — exit the thread.
                 if received < 0 && (errno == EINTR) { continue }
                 break
             }
+            let from = fromPtr.pointee
             let remote = UDPEndpoint(address: from.sin_addr.s_addr, port: UInt16(bigEndian: from.sin_port))
-            onPacket(buffer, received, remote)
+            let arrival = Self.kernelArrivalNs(control: controlPtr,
+                                               controlLen: Int(msgPtr.pointee.msg_controllen))
+            onPacket(buffer, received, remote, arrival)
         }
+    }
+
+    /// Pull the kernel's arrival timestamp out of the control buffer, or 0 when absent.
+    /// Only the first control message is examined — SO_TIMESTAMP is the only one requested.
+    static func kernelArrivalNs(control: UnsafeRawPointer, controlLen: Int) -> UInt64 {
+        guard controlLen >= cmsgLen(MemoryLayout<timeval>.size) else { return 0 }
+        // loadUnaligned: control data carries no alignment guarantee for these structs, and a
+        // misaligned typed load is undefined behaviour.
+        let header = control.loadUnaligned(as: cmsghdr.self)
+        guard header.cmsg_level == SOL_SOCKET, header.cmsg_type == SCM_TIMESTAMP,
+              Int(header.cmsg_len) >= cmsgLen(MemoryLayout<timeval>.size) else { return 0 }
+        let tv = (control + cmsgHeaderSize).loadUnaligned(as: timeval.self)
+        guard tv.tv_sec > 0 else { return 0 }
+        return UInt64(tv.tv_sec) &* 1_000_000_000 &+ UInt64(max(0, tv.tv_usec)) &* 1_000
     }
 }
 

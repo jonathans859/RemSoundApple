@@ -73,6 +73,7 @@ public final class PlayoutMixer {
     private var retiredTrimFires: Int64 = 0
     private var retiredTuneBlocking: Int64 = 0
     private var retiredDeviceGulp: Int64 = 0
+    private var retiredConcealedFrames: Int64 = 0
 
     private func retireCounters(of session: SessionPlayout) {
         let counters = session.glitchCounters
@@ -80,18 +81,21 @@ public final class PlayoutMixer {
         retiredTrimFires += counters.trims
         retiredTuneBlocking += counters.tuneBlocking
         retiredDeviceGulp += counters.deviceGulp
+        retiredConcealedFrames += counters.concealedFrames
     }
 
     /// Cumulative underrun / click-trim counts across all sessions, past and present.
     /// `tuneBlocking` and `deviceGulp` partition the short reads by cause — the auto-tune
     /// gates on the first and must ignore the second (see `SessionPlayout`).
-    public var glitchTotals: (underruns: Int64, trims: Int64, tuneBlocking: Int64, deviceGulp: Int64) {
+    public var glitchTotals: (underruns: Int64, trims: Int64, tuneBlocking: Int64, deviceGulp: Int64,
+                              concealedMs: Int64) {
         lock.lock()
         let all = snapshot
         var underruns = retiredUnderruns
         var trims = retiredTrimFires
         var tuneBlocking = retiredTuneBlocking
         var deviceGulp = retiredDeviceGulp
+        var concealedFrames = retiredConcealedFrames
         lock.unlock()
         for session in all {
             let counters = session.glitchCounters
@@ -99,8 +103,10 @@ public final class PlayoutMixer {
             trims += counters.trims
             tuneBlocking += counters.tuneBlocking
             deviceGulp += counters.deviceGulp
+            concealedFrames += counters.concealedFrames
         }
-        return (underruns, trims, tuneBlocking, deviceGulp)
+        return (underruns, trims, tuneBlocking, deviceGulp,
+                concealedFrames * 1000 / Int64(SessionPlayout.mixSampleRate))
     }
 
     // Render-callback period, measured rather than assumed. The auto-tune adds the observed

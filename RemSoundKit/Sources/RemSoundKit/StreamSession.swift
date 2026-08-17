@@ -53,8 +53,10 @@ final class StreamSession {
     /// Decode one audio payload and hand the result to playout. Malformed or undecryptable
     /// payloads are dropped silently — a wrong password is surfaced from the format-packet
     /// fingerprint, never as garbage audio.
-    func handleAudioPayload(sequence: UInt32, payload: ArraySlice<UInt8>) {
-        if let diagnostics { arrivals.record(sequence: sequence, into: diagnostics) }
+    func handleAudioPayload(sequence: UInt32, payload: ArraySlice<UInt8>, kernelArrivalNs: UInt64 = 0) {
+        if let diagnostics {
+            arrivals.record(sequence: sequence, kernelArrivalNs: kernelArrivalNs, into: diagnostics)
+        }
         switch format.codec {
         case .pcm: handlePcm(payload)
         case .opus: handleOpus(sequence: sequence, payload: payload)

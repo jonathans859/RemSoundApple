@@ -54,6 +54,10 @@ public struct StreamDiagnosticsSnapshot: Sendable {
     public var gapsOver60ms: Int64 = 0
     public var gapsOver100ms: Int64 = 0
     public var opusMode: OpusPacketMode = .unknown
+    /// Whether the gap figures came from the kernel's delivery timestamp rather than from
+    /// the receive thread. Surfaced because the two measure different things, and a silent
+    /// fallback would make a capture look like network jitter when it is app throttling.
+    public var usingKernelTimestamps = false
 
     public init() {}
 }
@@ -101,9 +105,10 @@ public final class StreamDiagnostics {
 
     // MARK: - Network thread
 
-    func recordArrival(gapMs: Int?) {
+    func recordArrival(gapMs: Int?, kernelTimed: Bool = false) {
         lock.lock()
         stats.audioPacketsReceived &+= 1
+        stats.usingKernelTimestamps = kernelTimed
         if let gapMs {
             if gapMs > peakGapMs { peakGapMs = gapMs }
             if gapMs > 100 {
@@ -168,13 +173,32 @@ struct ArrivalTracker {
     private static let maxPlausibleGap: UInt32 = 500
 
     private var lastSequence: UInt32?
-    private var lastArrivalNs: UInt64 = 0
+    private var lastLocalNs: UInt64 = 0
+    private var lastKernelNs: UInt64 = 0
 
-    mutating func record(sequence: UInt32, into diagnostics: StreamDiagnostics) {
+    /// Measure the inter-arrival gap, preferring the kernel's timestamp.
+    ///
+    /// The local clock times when *this thread got round to* the packet. Under iOS
+    /// background throttling the receive thread is descheduled while datagrams queue in the
+    /// socket buffer, so a burst of on-time packets reads as one huge gap — which is exactly
+    /// what drove the latency auto-tune to its ceiling for no benefit. The kernel stamp is
+    /// taken on delivery and is immune to that.
+    ///
+    /// The two clocks are never mixed: kernel stamps are wall-clock, the local one is
+    /// monotonic, so subtracting across them would be meaningless. A packet without a kernel
+    /// stamp yields no gap rather than a bogus one, and resets the kernel baseline.
+    mutating func record(sequence: UInt32, kernelArrivalNs: UInt64, into diagnostics: StreamDiagnostics) {
         let nowNs = DispatchTime.now().uptimeNanoseconds
-        let gapMs: Int? = lastArrivalNs == 0 ? nil : Int((nowNs &- lastArrivalNs) / 1_000_000)
-        lastArrivalNs = nowNs
-        diagnostics.recordArrival(gapMs: gapMs)
+        let gapMs: Int?
+        if kernelArrivalNs != 0 {
+            gapMs = lastKernelNs == 0 ? nil : Int((kernelArrivalNs &- lastKernelNs) / 1_000_000)
+            lastKernelNs = kernelArrivalNs
+        } else {
+            gapMs = lastLocalNs == 0 ? nil : Int((nowNs &- lastLocalNs) / 1_000_000)
+            lastKernelNs = 0
+        }
+        lastLocalNs = nowNs
+        diagnostics.recordArrival(gapMs: gapMs, kernelTimed: kernelArrivalNs != 0)
 
         guard let last = lastSequence else {
             lastSequence = sequence

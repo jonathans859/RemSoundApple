@@ -119,7 +119,7 @@ public final class PeerDiscoveryService {
         self.displayName = displayName
         self.audioPort = audioPort
 
-        let sock = UDPSocket(onPacket: { [weak self] buffer, length, remote in
+        let sock = UDPSocket(onPacket: { [weak self] buffer, length, remote, _ in
             self?.handleAnnouncement(buffer: buffer, length: length, remote: remote)
         }, onDiagnostic: { [weak self] msg in self?.onDiagnostic?("discovery: \(msg)") })
         do {

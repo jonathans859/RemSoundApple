@@ -16,7 +16,7 @@ final class AddrCheckTests: XCTestCase {
 
         let echoed = XCTestExpectation(description: "AddrCheck echoed back")
         let received = UncheckedBox<[UInt8]>([])
-        let probe = UDPSocket(onPacket: { buffer, length, _ in
+        let probe = UDPSocket(onPacket: { buffer, length, _, _ in
             received.value = Array(buffer[0..<length])
             echoed.fulfill()
         })
@@ -47,7 +47,7 @@ final class AddrCheckTests: XCTestCase {
         defer { engine.stop() }
 
         let echoed = XCTestExpectation(description: "AddrCheck echoed back despite allow-list")
-        let probe = UDPSocket(onPacket: { _, _, _ in echoed.fulfill() })
+        let probe = UDPSocket(onPacket: { _, _, _, _ in echoed.fulfill() })
         try probe.start(port: 0)
         defer { probe.stop() }
 

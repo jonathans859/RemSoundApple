@@ -172,8 +172,8 @@ public final class AudioReceiverEngine {
     /// Bind the UDP socket. Heartbeats flow regardless of `playbackEnabled`.
     public func start(port: UInt16 = RemPacket.defaultPort) throws {
         guard socket == nil else { return }
-        let sock = UDPSocket(onPacket: { [weak self] buffer, length, remote in
-            self?.handleRawPacket(buffer: buffer, length: length, remote: remote)
+        let sock = UDPSocket(onPacket: { [weak self] buffer, length, remote, kernelArrivalNs in
+            self?.handleRawPacket(buffer: buffer, length: length, remote: remote, kernelArrivalNs: kernelArrivalNs)
         }, onDiagnostic: { [weak self] msg in self?.onDiagnostic?("network: \(msg)") })
         try sock.start(port: port)
         socket = sock
@@ -213,7 +213,7 @@ public final class AudioReceiverEngine {
 
     // MARK: - Packet path (network thread)
 
-    private func handleRawPacket(buffer: [UInt8], length: Int, remote: UDPEndpoint) {
+    private func handleRawPacket(buffer: [UInt8], length: Int, remote: UDPEndpoint, kernelArrivalNs: UInt64) {
         bytesReceived &+= Int64(length)
         guard let header = RemPacket.readHeader(buffer, length: length) else { return }
 
@@ -222,7 +222,7 @@ public final class AudioReceiverEngine {
             handleFormat(remote: remote, streamId: header.streamId, payload: buffer[RemPacket.headerSize..<length])
         case .audio:
             handleAudio(remote: remote, streamId: header.streamId, sequence: header.sequence,
-                        payload: buffer[RemPacket.headerSize..<length])
+                        payload: buffer[RemPacket.headerSize..<length], kernelArrivalNs: kernelArrivalNs)
         case .heartbeat:
             onHeartbeatReceived?(buffer, length, remote)
         case .addrCheck:
@@ -306,7 +306,8 @@ public final class AudioReceiverEngine {
         }
     }
 
-    private func handleAudio(remote: UDPEndpoint, streamId: UInt16, sequence: UInt32, payload: ArraySlice<UInt8>) {
+    private func handleAudio(remote: UDPEndpoint, streamId: UInt16, sequence: UInt32,
+                             payload: ArraySlice<UInt8>, kernelArrivalNs: UInt64) {
         lock.lock()
         guard playbackEnabled, isSenderAllowed(remote) else {
             lock.unlock()
@@ -317,7 +318,7 @@ public final class AudioReceiverEngine {
         lock.unlock()
 
         guard let session else { return } // no Format seen yet — session opens on Format
-        session.handleAudioPayload(sequence: sequence, payload: payload)
+        session.handleAudioPayload(sequence: sequence, payload: payload, kernelArrivalNs: kernelArrivalNs)
     }
 
     // MARK: - Maintenance

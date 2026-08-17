@@ -57,6 +57,12 @@ final class SessionPlayout {
     private(set) var tuneBlockingUnderruns: Int64 = 0
     private(set) var deviceGulpUnderruns: Int64 = 0
 
+    /// Frames of audio that could not be produced — the *duration* of the damage, where the
+    /// counters above are only its frequency. These diverge sharply: raising the buffer on a
+    /// jittery link left the underrun count unchanged while making every dropout much shorter,
+    /// so a count alone reports "no improvement" for a change the listener hears clearly.
+    private(set) var concealedFrames: Int64 = 0
+
     /// Low-pass-filtered buffer-level error in frames (negative = running below target).
     /// Same 2 s time constant as upstream's `filteredErrorFrames`.
     private var filteredErrorFrames = 0.0
@@ -88,10 +94,11 @@ final class SessionPlayout {
 
     /// Snapshot of the glitch counters under the buffer lock (1 Hz status UI). The cause-split
     /// pair rides along so the auto-tune reads one consistent set.
-    var glitchCounters: (underruns: Int64, trims: Int64, tuneBlocking: Int64, deviceGulp: Int64) {
+    var glitchCounters: (underruns: Int64, trims: Int64, tuneBlocking: Int64, deviceGulp: Int64,
+                         concealedFrames: Int64) {
         lock.lock()
         defer { lock.unlock() }
-        return (underruns, trimFireCount, tuneBlockingUnderruns, deviceGulpUnderruns)
+        return (underruns, trimFireCount, tuneBlockingUnderruns, deviceGulpUnderruns, concealedFrames)
     }
 
     func setTargetLatencyMs(_ ms: Int, drainOnLower: Bool = true) {
@@ -214,7 +221,10 @@ final class SessionPlayout {
         }
 
         let available = min(count, frames)
-        if available < frames { classifyShortReadLocked(empty: available == 0) }
+        if available < frames {
+            classifyShortReadLocked(empty: available == 0)
+            concealedFrames &+= Int64(frames - available)
+        }
         if available == 0 {
             // Full underrun. Fade the tail edge of the previous audio into the silence so
             // the gap edge is smooth, then count and (eventually) disarm.

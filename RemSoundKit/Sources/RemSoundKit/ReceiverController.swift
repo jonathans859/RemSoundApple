@@ -308,7 +308,7 @@ public final class ReceiverController {
     private var lastTxRateKBs = 0.0
 
     // Sliding window of cumulative glitch totals for the "last minute" connection line.
-    private var glitchSamples: [(time: Date, underruns: Int64, trims: Int64)] = []
+    private var glitchSamples: [(time: Date, underruns: Int64, trims: Int64, concealedMs: Int64)] = []
 
     // Same sliding-minute treatment for the packet counters. The peak arrival gap is a peak
     // rather than a total, so it is drained from the engine each tick and kept per-sample —
@@ -994,7 +994,8 @@ public final class ReceiverController {
         // margin and old audio was cut to bound latency. Reported over a sliding minute
         // so "is it glitching right now" is answerable from the panel, with VoiceOver.
         let totals = mixer.glitchTotals
-        glitchSamples.append((time: now, underruns: totals.underruns, trims: totals.trims))
+        glitchSamples.append((time: now, underruns: totals.underruns, trims: totals.trims,
+                              concealedMs: totals.concealedMs))
         glitchSamples.removeAll { now.timeIntervalSince($0.time) > 60 }
         if mixer.activeSessionCount > 0, let oldest = glitchSamples.first {
             let dropouts = totals.underruns - oldest.underruns
@@ -1003,6 +1004,13 @@ public final class ReceiverController {
                 lines.append("No audio dropouts in the last minute")
             } else {
                 lines.append("Last minute: \(dropouts) audio dropout\(dropouts == 1 ? "" : "s"), \(trims) buffer trim\(trims == 1 ? "" : "s")")
+            }
+            // Duration, not just frequency. Raising the buffer on a jittery link can leave the
+            // dropout COUNT unchanged while making each one far shorter — a difference the
+            // listener hears clearly and a count alone reports as "no improvement".
+            let concealed = totals.concealedMs - oldest.concealedMs
+            if concealed > 0 {
+                lines.append("Silence inserted last minute: \(concealed) ms")
             }
         }
 
@@ -1154,7 +1162,11 @@ public final class ReceiverController {
             let over30 = stats.gapsOver30ms - oldest.stats.gapsOver30ms
             let over60 = stats.gapsOver60ms - oldest.stats.gapsOver60ms
             let over100 = stats.gapsOver100ms - oldest.stats.gapsOver100ms
-            lines.append("Packet timing last minute: longest gap \(windowPeak) ms; "
+            // Say which clock produced these. Timed on the receive thread they measure our
+            // own scheduling as much as the network — under iOS background throttling a burst
+            // of on-time packets reads as one huge gap.
+            let clock = stats.usingKernelTimestamps ? "kernel-timed" : "thread-timed"
+            lines.append("Packet timing last minute (\(clock)): longest gap \(windowPeak) ms; "
                          + "\(over30) over 30 ms, \(over60) over 60 ms, \(over100) over 100 ms")
             if windowPeak > targetLatencyMs {
                 lines.append("The longest gap was larger than the \(targetLatencyMs) ms maximum delay, "
