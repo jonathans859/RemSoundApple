@@ -19,3 +19,6 @@ logs_*/
 
 # Claude session notes (never committed)
 .claude-notes/
+
+# Skills-sync hook state (per-machine, not project content)
+.claude/.skills-sync-marker
