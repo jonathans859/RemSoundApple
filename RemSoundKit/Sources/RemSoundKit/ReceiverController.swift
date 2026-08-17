@@ -2,6 +2,8 @@ import Foundation
 import Observation
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 /// One row in the peer list — a discovered peer, a manual entry, or both merged by address.
@@ -953,6 +955,42 @@ public final class ReceiverController {
         appendNetworkDiagnostics(to: &lines)
 
         if lines != connectionDetails { connectionDetails = lines }
+    }
+
+    /// The whole connection panel as pasteable plain text, with a timestamp and the app
+    /// version so a pasted report is self-describing. The status and error lines come first
+    /// because they are the context the numbers below only make sense against.
+    public var connectionReport: String {
+        var lines: [String] = ["RemSound connection details"]
+        let stamp = DateFormatter()
+        stamp.dateStyle = .medium
+        stamp.timeStyle = .medium
+        lines.append(stamp.string(from: Date()))
+        let info = Bundle.main.infoDictionary
+        if let short = info?["CFBundleShortVersionString"] as? String {
+            let build = info?["CFBundleVersion"] as? String
+            lines.append(build.map { "Version \(short) (build \($0))" } ?? "Version \(short)")
+        }
+        lines.append("")
+        lines.append(statusSummary)
+        if let lastError { lines.append("Error: \(lastError)") }
+        lines.append("Maximum delay: \(targetLatencyMs) ms")
+        lines.append("")
+        lines.append(contentsOf: connectionDetails)
+        return lines.joined(separator: "\n")
+    }
+
+    /// Put `connectionReport` on the system pasteboard. Announces on iOS because a copy
+    /// produces no other feedback a screen-reader user can perceive.
+    public func copyConnectionReport() {
+        let text = connectionReport
+#if os(iOS)
+        UIPasteboard.general.string = text
+#elseif os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+#endif
+        announce("Connection details copied")
     }
 
     /// Take one point of the sliding minute of packet counters. Called from the functional

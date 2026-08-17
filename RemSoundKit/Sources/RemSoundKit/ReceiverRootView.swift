@@ -8,6 +8,8 @@ public struct ReceiverRootView: View {
     @State private var newPeerHost = ""
     @FocusState private var addPeerFocused: Bool
     @State private var showingAbout = false
+    @State private var copiedConnectionDetails = false
+    @State private var copyResetTask: Task<Void, Never>?
     @State private var newProfileName = ""
     @FocusState private var profileNameFocused: Bool
     @State private var renamingProfileId: UUID?
@@ -301,6 +303,23 @@ public struct ReceiverRootView: View {
                         .font(.callout)
                         .accessibilityAddTraits(.updatesFrequently)
                 }
+
+                // These lines are the raw material of a bug report, and they refresh every
+                // second — selecting them by hand is impractical on iOS and fiddly on macOS.
+                // Confirmation is doubled up deliberately: `copyConnectionReport` posts a
+                // VoiceOver announcement on iOS, and the label flip covers macOS, where
+                // announcements from a background LSUIElement app are unreliable.
+                Button(copiedConnectionDetails ? "Copied" : "Copy connection details") {
+                    controller.copyConnectionReport()
+                    copiedConnectionDetails = true
+                    copyResetTask?.cancel()
+                    copyResetTask = Task {
+                        try? await Task.sleep(for: .seconds(2))
+                        guard !Task.isCancelled else { return }
+                        copiedConnectionDetails = false
+                    }
+                }
+                .accessibilityHint("Copies the status and connection details above as text")
             } header: {
                 Text("Connection")
             }
