@@ -16,10 +16,15 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
     /// Stable input id; nil = system default (matches `ReceiverSettings.selectedMicrophoneId`).
     public var selectedMicrophoneId: String?
     public var targetLatencyMs: Int
+    /// Whether the delay is retuned continuously (see `LatencyAutoTune`). Part of the
+    /// snapshot because it changes the meaning of `targetLatencyMs`: with it on, the stored
+    /// delay is a starting point the tuner moves, not a value the profile pins.
+    public var autoTuneLatencyEnabled: Bool
 
     public init(id: UUID = UUID(), name: String, manualPeers: [ManualPeer],
                 selectedPeerAddresses: [String], receiveEnabled: Bool, sendEnabled: Bool,
-                selectedMicrophoneId: String?, targetLatencyMs: Int) {
+                selectedMicrophoneId: String?, targetLatencyMs: Int,
+                autoTuneLatencyEnabled: Bool = false) {
         self.id = id
         self.name = name
         self.manualPeers = manualPeers
@@ -28,6 +33,31 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
         self.sendEnabled = sendEnabled
         self.selectedMicrophoneId = selectedMicrophoneId
         self.targetLatencyMs = targetLatencyMs
+        self.autoTuneLatencyEnabled = autoTuneLatencyEnabled
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, manualPeers, selectedPeerAddresses, receiveEnabled, sendEnabled
+        case selectedMicrophoneId, targetLatencyMs, autoTuneLatencyEnabled
+    }
+
+    /// Hand-written so a field added later cannot destroy the user's profiles. Both decode
+    /// paths — the local JSON blob in UserDefaults and each per-profile iCloud key — use
+    /// `try?` and treat a throw as "no profiles", so a synthesised decoder meeting JSON
+    /// written by an older build would silently wipe the list rather than fail loudly. Every
+    /// field added from here on must be decoded with a default, for the same reason.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        manualPeers = try container.decodeIfPresent([ManualPeer].self, forKey: .manualPeers) ?? []
+        selectedPeerAddresses = try container.decodeIfPresent([String].self, forKey: .selectedPeerAddresses) ?? []
+        receiveEnabled = try container.decodeIfPresent(Bool.self, forKey: .receiveEnabled) ?? true
+        sendEnabled = try container.decodeIfPresent(Bool.self, forKey: .sendEnabled) ?? false
+        selectedMicrophoneId = try container.decodeIfPresent(String.self, forKey: .selectedMicrophoneId)
+        targetLatencyMs = try container.decodeIfPresent(Int.self, forKey: .targetLatencyMs)
+            ?? ReceiverSettings.defaultTargetLatencyMs
+        autoTuneLatencyEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoTuneLatencyEnabled) ?? false
     }
 }
 
@@ -178,6 +208,7 @@ public final class ProfileStore {
         settings.sendEnabled = profile.sendEnabled
         settings.selectedMicrophoneId = profile.selectedMicrophoneId
         settings.targetLatencyMs = profile.targetLatencyMs
+        settings.autoTuneLatencyEnabled = profile.autoTuneLatencyEnabled
         settings.password = password(forProfile: profileId)
         settings.lastAppliedProfileId = profileId
     }

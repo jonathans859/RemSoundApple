@@ -77,7 +77,17 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 
 - v3.x protocol only; no legacy, no relay-v2 lobby, no recording.
 - Profiles (2026-07-12, user reversed the earlier "no profiles" decision): local named
-  snapshots of peers + selection, password, receive/send toggles, microphone, max delay —
+  snapshots of peers + selection, password, receive/send toggles, microphone, max delay,
+  auto-tune on/off (2026-08-17) —
+  **`ReceiverProfile.init(from:)` is hand-written and every field after `id`/`name` decodes
+  with a default — keep it that way when adding fields.** Both read paths (`ProfileStore.profiles`
+  and `ProfileSync.readRemote`) decode with `try?` and treat a throw as "no profiles", so a
+  synthesised decoder meeting JSON from an older build would silently WIPE the user's
+  profiles — and with sync on, publish that wipe. Pinned by `ProfileCompatibilityTests`.
+  With auto-tune on, a profile's `targetLatencyMs` is only where the tuner starts, so
+  `appliedProfile`'s drift check skips that one field for such profiles (otherwise the
+  "Currently applied" marker drops seconds after applying one); every other field, including
+  the auto-tune flag itself, is still compared.
   `Profiles.swift` (`ReceiverProfile` + `ProfileStore`), applied via
   `ReceiverController.applyProfile`. JSON in UserDefaults; each profile's password is its
   own Keychain item (`profile-password-<uuid>`), never in the JSON

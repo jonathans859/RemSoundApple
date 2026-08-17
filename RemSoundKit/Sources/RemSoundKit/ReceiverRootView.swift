@@ -226,7 +226,11 @@ public struct ReceiverRootView: View {
         if peerCount > 0 {
             parts.append("\(peerCount) saved peer\(peerCount == 1 ? "" : "s")")
         }
-        parts.append("\(profile.targetLatencyMs) ms delay")
+        // With auto-tune on the stored delay is only where the tuner starts, so say so
+        // rather than promising a value the profile will not hold to.
+        parts.append(profile.autoTuneLatencyEnabled
+                     ? "delay adjusted automatically from \(profile.targetLatencyMs) ms"
+                     : "\(profile.targetLatencyMs) ms delay")
         return parts.joined(separator: ", ")
     }
 

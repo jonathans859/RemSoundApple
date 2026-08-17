@@ -85,8 +85,17 @@ public final class ReceiverController {
     public var appliedProfile: ReceiverProfile? {
         guard let id = lastAppliedProfileId,
               let profile = profiles.first(where: { $0.id == id }),
-              profileSnapshot(id: profile.id, name: profile.name) == profile,
               profileStore.password(forProfile: profile.id) == password else { return nil }
+        var live = profileSnapshot(id: profile.id, name: profile.name)
+        // A profile with auto-tune on does not pin a delay — the tuner owns that value at
+        // runtime (which is also why its moves are not persisted). Comparing it would drop
+        // the marker within seconds of applying such a profile, reporting drift for the one
+        // thing the profile explicitly delegates. Every other field is still compared, so a
+        // real edit — including turning auto-tune off — still clears the marker.
+        if profile.autoTuneLatencyEnabled && live.autoTuneLatencyEnabled {
+            live.targetLatencyMs = profile.targetLatencyMs
+        }
+        guard live == profile else { return nil }
         return profile
     }
 
@@ -632,6 +641,9 @@ public final class ReceiverController {
         manualResolved = manualResolved.filter { ids.contains($0.key) }
         selectedAddresses = Set(profile.selectedPeerAddresses)
         settings.selectedPeerAddresses = selectedAddresses
+        // Before the delay, not after: switching auto-tune off hands back the persisted
+        // user value, which would otherwise land on top of the profile's own delay.
+        autoTuneLatencyEnabled = profile.autoTuneLatencyEnabled
         targetLatencyMs = profile.targetLatencyMs
         selectedMicrophoneId = profile.selectedMicrophoneId
         password = profileStore.password(forProfile: profile.id)
@@ -664,7 +676,8 @@ public final class ReceiverController {
             receiveEnabled: receiveEnabled,
             sendEnabled: sendEnabled,
             selectedMicrophoneId: selectedMicrophoneId,
-            targetLatencyMs: targetLatencyMs)
+            targetLatencyMs: targetLatencyMs,
+            autoTuneLatencyEnabled: autoTuneLatencyEnabled)
     }
 
     private func resolveManualPeers() {

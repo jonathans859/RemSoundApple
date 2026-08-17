@@ -52,11 +52,13 @@ public final class ReceiverSettings {
     /// Bounds of the delay control, shared with `PlayoutMixer` and the auto-tune's clamp.
     public static let minTargetLatencyMs = 5
     public static let maxTargetLatencyMs = 500
+    /// The Windows app's default, and the fallback for a profile written before the field.
+    public static let defaultTargetLatencyMs = 80
 
     public var targetLatencyMs: Int {
         get {
             let value = defaults.integer(forKey: "targetLatencyMs")
-            return value == 0 ? 80 : Self.clampLatency(value) // Windows default: 80 ms
+            return value == 0 ? Self.defaultTargetLatencyMs : Self.clampLatency(value)
         }
         set { defaults.set(Self.clampLatency(newValue), forKey: "targetLatencyMs") }
     }
