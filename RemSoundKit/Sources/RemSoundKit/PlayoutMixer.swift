@@ -31,7 +31,7 @@ public final class PlayoutMixer {
 
     public func setTargetLatencyMs(_ ms: Int, drainOnLower: Bool = true) {
         lock.lock()
-        targetLatencyMs = max(5, min(500, ms))
+        targetLatencyMs = ReceiverSettings.clampLatency(ms)
         let all = snapshot
         lock.unlock()
         for session in all {
@@ -71,26 +71,64 @@ public final class PlayoutMixer {
     // the status UI diffs against never run backwards when a stream ends or is superseded.
     private var retiredUnderruns: Int64 = 0
     private var retiredTrimFires: Int64 = 0
+    private var retiredTuneBlocking: Int64 = 0
+    private var retiredDeviceGulp: Int64 = 0
 
     private func retireCounters(of session: SessionPlayout) {
         let counters = session.glitchCounters
         retiredUnderruns += counters.underruns
         retiredTrimFires += counters.trims
+        retiredTuneBlocking += counters.tuneBlocking
+        retiredDeviceGulp += counters.deviceGulp
     }
 
     /// Cumulative underrun / click-trim counts across all sessions, past and present.
-    public var glitchTotals: (underruns: Int64, trims: Int64) {
+    /// `tuneBlocking` and `deviceGulp` partition the short reads by cause — the auto-tune
+    /// gates on the first and must ignore the second (see `SessionPlayout`).
+    public var glitchTotals: (underruns: Int64, trims: Int64, tuneBlocking: Int64, deviceGulp: Int64) {
         lock.lock()
         let all = snapshot
         var underruns = retiredUnderruns
         var trims = retiredTrimFires
+        var tuneBlocking = retiredTuneBlocking
+        var deviceGulp = retiredDeviceGulp
         lock.unlock()
         for session in all {
             let counters = session.glitchCounters
             underruns += counters.underruns
             trims += counters.trims
+            tuneBlocking += counters.tuneBlocking
+            deviceGulp += counters.deviceGulp
         }
-        return (underruns, trims)
+        return (underruns, trims, tuneBlocking, deviceGulp)
+    }
+
+    // Render-callback period, measured rather than assumed. The auto-tune adds the observed
+    // callback gap to the network gap, so a chunky or late-scheduled output device cannot be
+    // mistaken for network jitter. Peak since the last drain, in ms.
+    private var peakRenderGapMs = 0
+    private var lastRenderNs: UInt64 = 0
+
+    /// Read and reset the peak render-callback interval. Main-actor side, once per tick.
+    public func drainPeakRenderGapMs() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let peak = peakRenderGapMs
+        peakRenderGapMs = 0
+        return peak
+    }
+
+    /// Called at the top of `render` on the audio thread. Uses the same lock the snapshot
+    /// read below takes, so this adds no extra synchronisation to the callback.
+    private func noteRenderCallback() {
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        lock.lock()
+        if lastRenderNs != 0 {
+            let gapMs = Int((nowNs &- lastRenderNs) / 1_000_000)
+            if gapMs > peakRenderGapMs { peakRenderGapMs = gapMs }
+        }
+        lastRenderNs = nowNs
+        lock.unlock()
     }
 
     public var activeSessionCount: Int {
@@ -110,6 +148,7 @@ public final class PlayoutMixer {
     /// Render `frames` stereo frames of mixed audio into `output` (interleaved float32).
     /// Called from the audio render thread.
     public func render(into output: UnsafeMutablePointer<Float>, frames: Int) {
+        noteRenderCallback()
         let sampleCount = frames * SessionPlayout.mixChannels
         for i in 0..<sampleCount { output[i] = 0 }
 

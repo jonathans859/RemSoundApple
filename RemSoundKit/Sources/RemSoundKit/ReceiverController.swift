@@ -155,8 +155,33 @@ public final class ReceiverController {
 
     public var targetLatencyMs: Int {
         didSet {
-            mixer.setTargetLatencyMs(targetLatencyMs)
-            settings.targetLatencyMs = targetLatencyMs
+            // Auto-tune moves this too. When it does, the change is runtime state, not a
+            // setting the user chose: it must not be persisted over their value, and it must
+            // not restart the deferral window that exists to let a *user* edit settle.
+            // Upstream draws the same distinction with `suppressUserSliderMoveTracking`.
+            if autoTuneIsMovingTarget {
+                mixer.setTargetLatencyMs(targetLatencyMs, drainOnLower: false)
+            } else {
+                mixer.setTargetLatencyMs(targetLatencyMs)
+                settings.targetLatencyMs = targetLatencyMs
+                lastUserLatencyChange = Date()
+            }
+        }
+    }
+
+    /// Continuously retune `targetLatencyMs` to what the link needs. See `LatencyAutoTune`.
+    public var autoTuneLatencyEnabled: Bool {
+        didSet {
+            settings.autoTuneLatencyEnabled = autoTuneLatencyEnabled
+            guard autoTuneLatencyEnabled != oldValue else { return }
+            // Start from a clean slate either way: stale history from before the toggle would
+            // otherwise drive the first tick.
+            autoTuneSamples = []
+            lastUserLatencyChange = Date()
+            if !autoTuneLatencyEnabled {
+                // Hand the user's own setting back — the tuned value was never theirs.
+                targetLatencyMs = settings.targetLatencyMs
+            }
         }
     }
 
@@ -281,6 +306,18 @@ public final class ReceiverController {
     // the reported figure is the max across the window, not a difference of endpoints.
     private var packetSamples: [(time: Date, stats: StreamDiagnosticsSnapshot, peakGapMs: Int)] = []
 
+    // --- Continuous auto-tune state (see LatencyAutoTune) ---
+    private var autoTuneSamples: [LatencyAutoTune.Sample] = []
+    private var lastAutoTuneRun = Date.distantPast
+    private var lastUserLatencyChange = Date.distantPast
+    private var lastTuneBlockingUnderruns: Int64 = 0
+    private var lastSessionsOpenedCount: Int64 = 0
+    /// True only while the tuner is assigning `targetLatencyMs`, so its didSet can tell an
+    /// automatic move from a user's.
+    private var autoTuneIsMovingTarget = false
+    /// Last decision, for the diagnostics panel.
+    private(set) var lastAutoTuneNote: String?
+
     public init() {
         // Startup profile (if configured): rewrite the persisted settings BEFORE they are
         // read below — rewriting-then-loading avoids every didSet/engine side effect.
@@ -296,6 +333,7 @@ public final class ReceiverController {
         volume = settings.volume
         targetLatencyMs = settings.targetLatencyMs
         cuesEnabled = settings.cuesEnabled
+        autoTuneLatencyEnabled = settings.autoTuneLatencyEnabled
         networkDiagnosticsEnabled = settings.networkDiagnosticsEnabled
         password = settings.password
         exclusiveAudio = settings.exclusiveAudio
@@ -377,6 +415,9 @@ public final class ReceiverController {
         lastError = nil
         glitchSamples = []
         packetSamples = []
+        autoTuneSamples = []
+        lastAutoTuneNote = nil
+        lastUserLatencyChange = Date()
         refreshMicrophoneList()
         applyPassword()
         do {
@@ -1000,8 +1041,72 @@ public final class ReceiverController {
         // Drained every tick: the peak is a since-last-read value, so a skipped read would
         // silently widen the window it represents.
         let peakGapMs = engine.diagnostics.drainPeakGapMs()
+        let peakRenderGapMs = mixer.drainPeakRenderGapMs()
         packetSamples.append((time: now, stats: engine.diagnostics.snapshot(), peakGapMs: peakGapMs))
         packetSamples.removeAll { now.timeIntervalSince($0.time) > 60 }
+
+        // Feed the tuner's own history. Only while audio is actually flowing — a second with
+        // no packets carries no timing information, and upstream skips those too.
+        if mixer.activeSessionCount > 0 {
+            autoTuneSamples.append(.init(arrivalGapMs: peakGapMs, renderGapMs: peakRenderGapMs))
+            let excess = autoTuneSamples.count - LatencyAutoTune.historySeconds
+            if excess > 0 { autoTuneSamples.removeFirst(excess) }
+        }
+        runAutoTuneIfDue(now: now)
+    }
+
+    /// Drive `LatencyAutoTune` on its interval. Runs in the functional half of the refresh
+    /// tick — the whole point is that it works while the app is backgrounded, which is exactly
+    /// when a mobile link misbehaves.
+    private func runAutoTuneIfDue(now: Date) {
+        // A new session invalidates the history: it may span a session boundary, and a
+        // cross-session gap would recommend a target the new stream could never arm at.
+        let opened = engine.sessionsOpenedCount
+        if opened != lastSessionsOpenedCount {
+            lastSessionsOpenedCount = opened
+            autoTuneSamples = []
+            lastUserLatencyChange = now
+        }
+
+        // The underrun baseline must track even while disabled, or enabling the tuner would
+        // hand it a huge first delta and make it skip.
+        let tuneBlocking = mixer.glitchTotals.tuneBlocking
+        let underrunDelta = tuneBlocking - lastTuneBlockingUnderruns
+
+        guard autoTuneLatencyEnabled else {
+            lastTuneBlockingUnderruns = tuneBlocking
+            return
+        }
+        let interval = TimeInterval(LatencyAutoTune.defaultIntervalSec)
+        guard now.timeIntervalSince(lastAutoTuneRun) >= interval else { return }
+        lastAutoTuneRun = now
+        lastTuneBlockingUnderruns = tuneBlocking
+
+        guard let frameMs = engine.activeStreamFrameMs else { return }
+
+        let decision = LatencyAutoTune.decide(.init(
+            samples: autoTuneSamples,
+            frameMs: frameMs,
+            currentTargetMs: targetLatencyMs,
+            minTargetMs: ReceiverSettings.minTargetLatencyMs,
+            maxTargetMs: ReceiverSettings.maxTargetLatencyMs,
+            tuneBlockingUnderrunDelta: underrunDelta,
+            deferring: now.timeIntervalSince(lastUserLatencyChange) < interval))
+
+        let note: String
+        switch decision {
+        case .retarget(let ms):
+            autoTuneIsMovingTarget = true
+            targetLatencyMs = ms
+            autoTuneIsMovingTarget = false
+            note = "Auto-tune set the delay to \(ms) ms"
+        case .hold(.underrunsSinceLastTick(let count)):
+            note = "Auto-tune held at \(targetLatencyMs) ms (\(count) dropout\(count == 1 ? "" : "s") since the last check)"
+        case .hold:
+            note = "Auto-tune holding the delay at \(targetLatencyMs) ms"
+        }
+        // @Observable fires on the write, not on the change, and this runs while backgrounded.
+        if note != lastAutoTuneNote { lastAutoTuneNote = note }
     }
 
     /// Packet-level lines: what the *network* did, as opposed to what the jitter buffer did.

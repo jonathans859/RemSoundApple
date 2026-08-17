@@ -118,6 +118,23 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   re-enter `start()` during startup. Every profile field (send included, now persisted)
   is covered by that rewrite; capture itself resumes via `startupSendPending` at the end
   of the first `start()`.
+- **Continuous latency auto-tune** (2026-08-17, opt-in, default off like upstream's):
+  `LatencyAutoTune.swift` is a port of the Windows `MainForm.TickRoute` — every 5 s it
+  recommends `secondHighest(arrival gap) + secondHighest(render-callback gap) + 5 ms`,
+  floored at `ceil(1.5 x frameMs)` and capped at 200 ms, raising in one step but lowering
+  at most 5 ms per tick, with 5 ms hysteresis. **Second**-highest, not peak: one transient
+  second must not drive the target (upstream had a lone 1046 ms gap slam the buffer to the
+  cap). `decide` is pure so CI can test it without audio or network. The per-route/lane half
+  of upstream's version is deliberately not ported (one mixed output here). Gating on
+  underruns REQUIRES the cause split in `SessionPlayout` — `tuneBlockingUnderruns` (empty
+  reads, or short reads while the LP-filtered buffer error sits >3 ms below target) vs
+  `deviceGulpUnderruns` (an on-target ring that missed one chunky callback); upstream found
+  that gating on the undifferentiated total pins the target high forever. Auto-tune moves are
+  runtime state: `ReceiverController.autoTuneIsMovingTarget` keeps the didSet from persisting
+  over the user's value or restarting the user-change deferral, and it uses the soft
+  (`drainOnLower: false`) setter. Upstream v5.9's "raise arrives in seconds" fast-approach is
+  NOT ported — that fixes their drift resampler's depth feedback, which this port has no
+  equivalent of; here a raise fills at whatever rate audio arrives.
 - Mic send: Opus-only, one mixed lane, 48 kHz stereo 192 kbps (RESTRICTED_LOWDELAY,
   complexity 10, VBR, FEC, 10 % loss bias) — mirrors the Windows sender. One endpoint per
   selected peer (two paths of one machine would double its sessions). Outbound audio uses

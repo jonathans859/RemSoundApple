@@ -132,6 +132,29 @@ public final class AudioReceiverEngine {
         return sessions.values.contains { $0.endpoint.address == address && $0.lastWriteTime >= cutoff }
     }
 
+    /// Frame duration of the active stream, in ms, rounded **up** — the auto-tune's codec
+    /// floor, so overestimating by half a millisecond is safer than rounding below the real
+    /// frame size. With several senders this takes the largest frame (most conservative).
+    /// nil when nothing is streaming.
+    public var activeStreamFrameMs: Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !sessions.isEmpty else { return nil }
+        var maxSamples = 0
+        var sampleRate = SessionPlayout.mixSampleRate
+        for session in sessions.values where session.format.frameSamplesPerChannel > maxSamples {
+            maxSamples = session.format.frameSamplesPerChannel
+            sampleRate = session.format.sampleRate > 0 ? session.format.sampleRate : SessionPlayout.mixSampleRate
+        }
+        guard maxSamples > 0 else { return nil }
+        return (maxSamples * 1000 + sampleRate - 1) / sampleRate
+    }
+
+    /// Incremented every time a new session opens. A rise means the gap history the auto-tune
+    /// samples spans a session boundary and must be discarded — a cross-session arrival gap
+    /// would otherwise recommend an absurd target the new session could never arm at.
+    public private(set) var sessionsOpenedCount: Int64 = 0
+
     /// Format of the freshest active session from this address (for "receiving Opus 10 ms…"
     /// status lines), or nil when nothing recent.
     public func activeFormat(from address: UInt32) -> AudioFormatInfo? {
@@ -254,6 +277,7 @@ public final class AudioReceiverEngine {
 
         let playout = mixer.getOrCreateSession(endpoint: remote, streamId: streamId)
         let isNew = sessions[key] == nil
+        if isNew { sessionsOpenedCount &+= 1 }
         sessions[key] = StreamSession(
             endpoint: remote, streamId: streamId, format: format, playout: playout,
             decryptor: decryptor, diagnostics: diagnostics)

@@ -466,6 +466,15 @@ public struct ReceiverRootView: View {
                     .accessibilityHidden(true)
             }
 
+            Toggle("Adjust delay automatically", isOn: $controller.autoTuneLatencyEnabled)
+                .accessibilityHint("Raises the delay when the network is unsteady and lowers it again when the network settles, instead of holding the value above")
+            if controller.autoTuneLatencyEnabled, let note = controller.lastAutoTuneNote {
+                Text(note)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+
             Toggle("Connection sounds", isOn: $controller.cuesEnabled)
                 .accessibilityHint("Plays a sound when a peer connects or disconnects")
 

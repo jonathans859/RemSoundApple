@@ -49,12 +49,20 @@ public final class ReceiverSettings {
         set { defaults.set(Array(newValue), forKey: "selectedPeerAddresses") }
     }
 
+    /// Bounds of the delay control, shared with `PlayoutMixer` and the auto-tune's clamp.
+    public static let minTargetLatencyMs = 5
+    public static let maxTargetLatencyMs = 500
+
     public var targetLatencyMs: Int {
         get {
             let value = defaults.integer(forKey: "targetLatencyMs")
-            return value == 0 ? 80 : min(500, max(5, value)) // Windows default: 80 ms
+            return value == 0 ? 80 : Self.clampLatency(value) // Windows default: 80 ms
         }
-        set { defaults.set(min(500, max(5, newValue)), forKey: "targetLatencyMs") }
+        set { defaults.set(Self.clampLatency(newValue), forKey: "targetLatencyMs") }
+    }
+
+    static func clampLatency(_ ms: Int) -> Int {
+        min(maxTargetLatencyMs, max(minTargetLatencyMs, ms))
     }
 
     public var volume: Float {
@@ -78,6 +86,15 @@ public final class ReceiverSettings {
     public var sendEnabled: Bool {
         get { defaults.bool(forKey: "sendEnabled") }
         set { defaults.set(newValue, forKey: "sendEnabled") }
+    }
+
+    /// Continuously retune the playout target to what the link currently needs, instead of
+    /// holding whatever the delay control was last set to. Default **off**, mirroring the
+    /// Windows receiver's default for the same feature — it moves a value the user chose, so
+    /// it is opt-in on both platforms.
+    public var autoTuneLatencyEnabled: Bool {
+        get { defaults.bool(forKey: "autoTuneLatencyEnabled") }
+        set { defaults.set(newValue, forKey: "autoTuneLatencyEnabled") }
     }
 
     /// Add packet-level network lines (loss, reordering, arrival gaps, sender codec mode) to

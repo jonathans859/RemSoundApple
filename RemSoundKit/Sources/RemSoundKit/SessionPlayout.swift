@@ -44,6 +44,28 @@ final class SessionPlayout {
     private(set) var trimFireCount: Int64 = 0
     private(set) var droppedFrames: Int64 = 0
 
+    // Cause-split of short reads, mirroring the Windows receiver's 2026-06-13 fix. The plain
+    // `underruns` total cannot tell apart two events that both come up short:
+    //   * PRODUCER starvation — the ring is draining below target because decoded audio isn't
+    //     arriving fast enough. More buffer genuinely helps: the auto-tune must not lower.
+    //   * DEVICE gulp — the render callback came late or asked for an oversized block, so an
+    //     otherwise on-target ring momentarily can't fill it. More buffer never cures that
+    //     pattern, it only adds permanent latency.
+    // Upstream records that gating the tuner on the undifferentiated total pinned the target
+    // high forever, because a steady trickle of inaudible gulps made every tick skip. They are
+    // told apart by where the buffer sits at the instant of the short read.
+    private(set) var tuneBlockingUnderruns: Int64 = 0
+    private(set) var deviceGulpUnderruns: Int64 = 0
+
+    /// Low-pass-filtered buffer-level error in frames (negative = running below target).
+    /// Same 2 s time constant as upstream's `filteredErrorFrames`.
+    private var filteredErrorFrames = 0.0
+    private var lastErrorSampleNs: UInt64 = 0
+    private static let errorFilterTimeConstantSec = 2.0
+    /// Deficit past which a short read counts as producer starvation rather than a gulp —
+    /// beyond the on-target jitter, far short of a real stall.
+    private static let tuneStarveMs = 3
+
     /// Wall-clock time of the last write — drives idle-session pruning.
     private(set) var lastWriteTime = Date()
 
@@ -64,11 +86,12 @@ final class SessionPlayout {
         return count * 1000 / Self.mixSampleRate
     }
 
-    /// Snapshot of the glitch counters under the buffer lock (1 Hz status UI).
-    var glitchCounters: (underruns: Int64, trims: Int64) {
+    /// Snapshot of the glitch counters under the buffer lock (1 Hz status UI). The cause-split
+    /// pair rides along so the auto-tune reads one consistent set.
+    var glitchCounters: (underruns: Int64, trims: Int64, tuneBlocking: Int64, deviceGulp: Int64) {
         lock.lock()
         defer { lock.unlock() }
-        return (underruns, trimFireCount)
+        return (underruns, trimFireCount, tuneBlockingUnderruns, deviceGulpUnderruns)
     }
 
     func setTargetLatencyMs(_ ms: Int, drainOnLower: Bool = true) {
@@ -132,6 +155,30 @@ final class SessionPlayout {
         }
     }
 
+    /// Track where the buffer is sitting relative to target, low-pass filtered. Sampled on the
+    /// render thread at the callback rate; `dt` is measured rather than assumed so the time
+    /// constant holds whatever the IO buffer size is.
+    private func updateErrorFilterLocked() {
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        defer { lastErrorSampleNs = nowNs }
+        guard lastErrorSampleNs != 0 else { return }
+        let dtSec = Double(nowNs &- lastErrorSampleNs) / 1_000_000_000
+        let errorFrames = Double(count - targetFrames)
+        let alpha = dtSec / (Self.errorFilterTimeConstantSec + dtSec)
+        filteredErrorFrames = (1 - alpha) * filteredErrorFrames + alpha * errorFrames
+    }
+
+    /// Split a short read into "the producer is behind" (more buffer helps) and "the device
+    /// gulped" (more buffer is pure added latency). See the counter declarations.
+    private func classifyShortReadLocked(empty: Bool) {
+        let starveFrames = Double(Self.tuneStarveMs * Self.mixSampleRate / 1000)
+        if empty || filteredErrorFrames <= -starveFrames {
+            tuneBlockingUnderruns &+= 1
+        } else {
+            deviceGulpUnderruns &+= 1
+        }
+    }
+
     private func dropOldestLocked(frames: Int) {
         let n = min(frames, count)
         head = (head + n) % capacityFrames
@@ -154,6 +201,8 @@ final class SessionPlayout {
         }
         for i in 0..<(frames * Self.mixChannels) { renderScratch[i] = 0 }
 
+        updateErrorFilterLocked()
+
         if !armed {
             if count >= targetFrames {
                 armed = true
@@ -165,6 +214,7 @@ final class SessionPlayout {
         }
 
         let available = min(count, frames)
+        if available < frames { classifyShortReadLocked(empty: available == 0) }
         if available == 0 {
             // Full underrun. Fade the tail edge of the previous audio into the silence so
             // the gap edge is smooth, then count and (eventually) disarm.
