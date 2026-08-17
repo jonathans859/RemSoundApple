@@ -20,6 +20,10 @@ public final class AudioReceiverEngine {
     /// Mix bus the audio output pulls from.
     public let mixer = PlayoutMixer()
 
+    /// Packet-level telemetry (loss, reordering, inter-arrival gaps, the sender's Opus mode),
+    /// aggregated across every session so the numbers survive streamId rotation and pruning.
+    public let diagnostics = StreamDiagnostics()
+
     private struct SessionKey: Hashable {
         let endpoint: UDPEndpoint
         let streamId: UInt16
@@ -151,6 +155,7 @@ public final class AudioReceiverEngine {
         try sock.start(port: port)
         socket = sock
         startDate = Date()
+        diagnostics.reset() // counters read against uptime, so a restart starts them clean
 
         let timer = DispatchSource.makeTimerSource(queue: timerQueue)
         // 200 ms leeway so this idle-session prune coalesces with the other periodic timers
@@ -250,7 +255,8 @@ public final class AudioReceiverEngine {
         let playout = mixer.getOrCreateSession(endpoint: remote, streamId: streamId)
         let isNew = sessions[key] == nil
         sessions[key] = StreamSession(
-            endpoint: remote, streamId: streamId, format: format, playout: playout, decryptor: decryptor)
+            endpoint: remote, streamId: streamId, format: format, playout: playout,
+            decryptor: decryptor, diagnostics: diagnostics)
 
         // Same-lane streamId rotation: the sender rerolls streamId on codec changes and
         // engine restarts; drop superseded sessions from this peer that share the lane so

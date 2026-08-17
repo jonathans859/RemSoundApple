@@ -450,6 +450,9 @@ public struct ReceiverRootView: View {
             Toggle("Connection sounds", isOn: $controller.cuesEnabled)
                 .accessibilityHint("Plays a sound when a peer connects or disconnects")
 
+            Toggle("Network diagnostics", isOn: $controller.networkDiagnosticsEnabled)
+                .accessibilityHint("Adds lost packets, packet timing and the sender's codec mode to the connection details on the Connectivity tab")
+
 #if os(iOS)
             Toggle("Don't mix with other sounds", isOn: $controller.exclusiveAudio)
                 .accessibilityHint("When on, RemSound interrupts other apps' audio and is interrupted by them, which also helps keep RemSound running while the screen is locked. When off, RemSound and other apps' sound can play at the same time.")

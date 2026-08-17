@@ -218,7 +218,12 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   → `StreamSession.swift` (decode) → `SessionPlayout.swift` (jitter buffer, fades — fades
   shape a per-session scratch BEFORE summing, never the shared mix buffer) →
   `PlayoutMixer.swift` (sum, volume, limiter) → `AudioOutput.swift` (AVAudioEngine +
-  iOS session handling).
+  iOS session handling). `StreamDiagnostics.swift` is measurement-only telemetry hanging off
+  the same path (loss / reorder / duplicate / inter-arrival gaps / the sender's Opus mode
+  read from the TOC byte); aggregate per engine, not per session, so counts survive streamId
+  rotation and idle pruning. Its sliding-minute window is sampled in the **functional** half
+  of the refresh tick — the peak gap is read-and-reset, so sampling only while the UI is
+  visible would fold a whole backgrounded session into one "last minute" figure.
 - Send path: `MicrophoneCapture.swift` (sink node → `CaptureRingBuffer.swift` → drain
   thread, 10 ms units; mono duplicated to both channels) → `AudioSendEngine.swift`
   (accumulate → Opus encode → encrypt → targets; format re-announce every 250 ms) via

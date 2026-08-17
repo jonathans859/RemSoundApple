@@ -15,6 +15,11 @@ final class StreamSession {
     private var opusDecoder: OpusStreamDecoder?
     private var expectedNextSequence: UInt32?
 
+    /// Packet-level telemetry sink (loss / reorder / arrival gaps / sender Opus mode).
+    /// Measurement only — the decode path below behaves identically with or without it.
+    private let diagnostics: StreamDiagnostics?
+    private var arrivals = ArrivalTracker()
+
     // Reused scratch buffers — steady-state allocation-free decode path.
     private var floatScratch: [Float] = []
     private var stereoScratch: [Float] = []
@@ -23,12 +28,14 @@ final class StreamSession {
 
     var lastWriteTime: Date { playout.lastWriteTime }
 
-    init(endpoint: UDPEndpoint, streamId: UInt16, format: AudioFormatInfo, playout: SessionPlayout, decryptor: AudioDecryptor) {
+    init(endpoint: UDPEndpoint, streamId: UInt16, format: AudioFormatInfo, playout: SessionPlayout,
+         decryptor: AudioDecryptor, diagnostics: StreamDiagnostics? = nil) {
         self.endpoint = endpoint
         self.streamId = streamId
         self.format = format
         self.playout = playout
         self.decryptor = decryptor
+        self.diagnostics = diagnostics
         if format.codec == .opus {
             opusDecoder = OpusStreamDecoder(sampleRate: format.sampleRate, channels: format.channels)
         }
@@ -47,6 +54,7 @@ final class StreamSession {
     /// payloads are dropped silently — a wrong password is surfaced from the format-packet
     /// fingerprint, never as garbage audio.
     func handleAudioPayload(sequence: UInt32, payload: ArraySlice<UInt8>) {
+        if let diagnostics { arrivals.record(sequence: sequence, into: diagnostics) }
         switch format.codec {
         case .pcm: handlePcm(payload)
         case .opus: handleOpus(sequence: sequence, payload: payload)
@@ -65,7 +73,10 @@ final class StreamSession {
         }
 
         // The reassembled frame is ciphertext — decrypt, then unpack int24 LE to float.
-        guard let plain = decryptor.tryDecrypt(assembled[...]) else { return }
+        guard let plain = decryptor.tryDecrypt(assembled[...]) else {
+            diagnostics?.recordDecryptFailure()
+            return
+        }
 
         let sampleCount = plain.count / 3
         guard sampleCount > 0 else { return }
@@ -77,7 +88,13 @@ final class StreamSession {
 
     private func handleOpus(sequence: UInt32, payload: ArraySlice<UInt8>) {
         guard let opusDecoder else { return }
-        guard let plain = decryptor.tryDecrypt(payload) else { return }
+        guard let plain = decryptor.tryDecrypt(payload) else {
+            diagnostics?.recordDecryptFailure()
+            return
+        }
+        // First plaintext byte is the Opus TOC — tells us which internal mode the sender's
+        // encoder actually chose, and therefore whether inband FEC can exist at all.
+        if let first = plain.first { diagnostics?.recordOpusTOC(first) }
 
         // Floor at 120 samples = 2.5 ms, libopus's RESTRICTED_LOWDELAY minimum, so a
         // malformed format packet can't undersize the decode buffer.

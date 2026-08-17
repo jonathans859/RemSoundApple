@@ -165,6 +165,13 @@ public final class ReceiverController {
         }
     }
 
+    /// Show the packet-level network lines in the connection panel. Display only — the
+    /// counters are collected either way, so turning this on mid-session shows real history
+    /// rather than starting from zero.
+    public var networkDiagnosticsEnabled: Bool {
+        didSet { settings.networkDiagnosticsEnabled = networkDiagnosticsEnabled }
+    }
+
     /// iOS: take sole control of audio (drop `.mixWithOthers`) so playback and the network
     /// survive the screen locking, at the cost of interrupting other apps' audio. Persisted;
     /// a no-op on macOS.
@@ -267,6 +274,11 @@ public final class ReceiverController {
     // Sliding window of cumulative glitch totals for the "last minute" connection line.
     private var glitchSamples: [(time: Date, underruns: Int64, trims: Int64)] = []
 
+    // Same sliding-minute treatment for the packet counters. The peak arrival gap is a peak
+    // rather than a total, so it is drained from the engine each tick and kept per-sample —
+    // the reported figure is the max across the window, not a difference of endpoints.
+    private var packetSamples: [(time: Date, stats: StreamDiagnosticsSnapshot, peakGapMs: Int)] = []
+
     public init() {
         // Startup profile (if configured): rewrite the persisted settings BEFORE they are
         // read below — rewriting-then-loading avoids every didSet/engine side effect.
@@ -282,6 +294,7 @@ public final class ReceiverController {
         volume = settings.volume
         targetLatencyMs = settings.targetLatencyMs
         cuesEnabled = settings.cuesEnabled
+        networkDiagnosticsEnabled = settings.networkDiagnosticsEnabled
         password = settings.password
         exclusiveAudio = settings.exclusiveAudio
         receiveEnabled = settings.receiveEnabled
@@ -361,6 +374,7 @@ public final class ReceiverController {
         guard !isRunning else { return }
         lastError = nil
         glitchSamples = []
+        packetSamples = []
         refreshMicrophoneList()
         applyPassword()
         do {
@@ -721,6 +735,12 @@ public final class ReceiverController {
         updateCues()
         updateSendTargets()
         updateIOBufferDemand()
+        // Functional, not presentational: the peak arrival gap is a read-and-reset value, so
+        // sampling only while a UI is on screen would fold a whole backgrounded session into
+        // the first sample and report it under a "last minute" label. This app is backgrounded
+        // for most of its life — which is also exactly when the interesting network events
+        // happen — so the window has to be kept regardless of visibility.
+        samplePacketDiagnostics()
 
         // Presentation half — status-string building and @Observable churn the UI diffs.
         // Pure waste while nothing is on screen; setUIVisible(true) forces one immediate full
@@ -930,7 +950,74 @@ public final class ReceiverController {
             }
         }
 
+        appendNetworkDiagnostics(to: &lines)
+
         if lines != connectionDetails { connectionDetails = lines }
+    }
+
+    /// Take one point of the sliding minute of packet counters. Called from the functional
+    /// half of the refresh tick — see the note at the call site.
+    private func samplePacketDiagnostics() {
+        let now = Date()
+        // Drained every tick: the peak is a since-last-read value, so a skipped read would
+        // silently widen the window it represents.
+        let peakGapMs = engine.diagnostics.drainPeakGapMs()
+        packetSamples.append((time: now, stats: engine.diagnostics.snapshot(), peakGapMs: peakGapMs))
+        packetSamples.removeAll { now.timeIntervalSince($0.time) > 60 }
+    }
+
+    /// Packet-level lines: what the *network* did, as opposed to what the jitter buffer did.
+    /// The two are routinely confused — a dropout counter alone cannot tell you whether
+    /// packets were lost or merely arrived late, and the fixes differ completely (redundancy
+    /// on the sender vs. a deeper buffer here).
+    private func appendNetworkDiagnostics(to lines: inout [String]) {
+        guard networkDiagnosticsEnabled, mixer.activeSessionCount > 0,
+              let oldest = packetSamples.first, let latest = packetSamples.last else { return }
+        let stats = latest.stats
+
+        let received = stats.audioPacketsReceived - oldest.stats.audioPacketsReceived
+        let lost = stats.packetsLost - oldest.stats.packetsLost
+        let late = stats.packetsLate - oldest.stats.packetsLate
+        let duplicate = stats.packetsDuplicate - oldest.stats.packetsDuplicate
+        let expected = received + lost
+
+        if expected > 0 {
+            var parts = ["\(received) received"]
+            let lossPercent = Double(lost) * 100 / Double(expected)
+            parts.append(String(format: "%lld lost (%.2f%%)", lost, lossPercent))
+            if late > 0 { parts.append("\(late) arrived late") }
+            if duplicate > 0 { parts.append("\(duplicate) duplicated") }
+            lines.append("Packets last minute: " + parts.joined(separator: ", "))
+        }
+
+        // Inter-arrival gaps are what the jitter buffer has to absorb: a gap longer than the
+        // buffered cushion is a dropout no matter how little was lost.
+        // Not a key path: Swift has no key paths into tuple elements.
+        let windowPeak = packetSamples.map { $0.peakGapMs }.max() ?? 0
+        if windowPeak > 0 {
+            let over30 = stats.gapsOver30ms - oldest.stats.gapsOver30ms
+            let over60 = stats.gapsOver60ms - oldest.stats.gapsOver60ms
+            let over100 = stats.gapsOver100ms - oldest.stats.gapsOver100ms
+            lines.append("Packet timing last minute: longest gap \(windowPeak) ms; "
+                         + "\(over30) over 30 ms, \(over60) over 60 ms, \(over100) over 100 ms")
+            if windowPeak > targetLatencyMs {
+                lines.append("The longest gap was larger than the \(targetLatencyMs) ms maximum delay, "
+                             + "so the buffer could not cover it")
+            }
+        }
+
+        if stats.opusMode != .unknown {
+            lines.append("Sender codec mode: Opus \(stats.opusMode.displayDescription)")
+        }
+
+        let decryptFailures = stats.decryptFailures - oldest.stats.decryptFailures
+        if decryptFailures > 0 {
+            lines.append("Packets that failed to decrypt last minute: \(decryptFailures)")
+        }
+        let resyncs = stats.resyncs - oldest.stats.resyncs
+        if resyncs > 0 {
+            lines.append("Sender stream restarts last minute: \(resyncs)")
+        }
     }
 
     private static func formatDuration(_ interval: TimeInterval) -> String {
