@@ -167,15 +167,19 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   button where pause would be, and a routed stop ends the now-playing session — with it set,
   Control Center could pause but never resume. Never "fix" the missing scrubber by declaring
   a live stream; omitting the duration already removes it.
-  **Open on hardware (2026-08-20):** Control Center works both ways, but an AirPods stem
-  press stops the audio WITHOUT reaching the app (our state stays "playing", later presses
-  do nothing). Unhandling `stopCommand` did not change that, so stop is handled again — as a
-  pause followed by an immediate `reassert()` — and every registered command now records
-  itself in `RemoteTransportControls.lastCommand`, surfaced in the Diagnostics panel next to
-  the last `AudioOutput` event (`ReceiverController.appendTransportDiagnostics`). That line
-  is there to separate "the system routed us something we ignored" from "nothing was routed
-  and the system paused the route itself" — they look identical from outside and need
-  opposite fixes. Do not delete it until the headset path is settled.
+  **Confirmed on hardware (2026-08-20): AirPods send `pause` for EVERY stem press**, in
+  every state — never `play`, never `togglePlayPause`, whatever `playbackState` we publish.
+  Read literally that makes the button one-way (first press pauses, the rest are no-ops),
+  which was the "it disconnects but never reconnects" bug. `RemoteTransportControls.handle`
+  therefore decides the direction itself: a `pause` arriving while we are already paused
+  resumes. Control Center is unaffected — it sends a real `play` when paused and never
+  sends `pause` twice. Two commands from one physical press (stop *and* pause) are
+  coalesced by a 0.5 s gate in the same place, so the press moves the state once; keep that
+  gate if you touch this. `stopCommand` is handled as a pause plus an immediate
+  `reassert()`. Every routed command records itself in `lastCommand`, surfaced in the
+  Diagnostics panel next to the last `AudioOutput` event
+  (`ReceiverController.appendTransportDiagnostics`) — that line is what identified this,
+  and it stays as long as the feature depends on guessing what an accessory sends.
   Untestable in CI and on the dev machine: verify on real hardware.
 - Mic send: Opus-only, one mixed lane, 48 kHz stereo 192 kbps (RESTRICTED_LOWDELAY,
   complexity 10, VBR, FEC, 10 % loss bias) — mirrors the Windows sender. One endpoint per

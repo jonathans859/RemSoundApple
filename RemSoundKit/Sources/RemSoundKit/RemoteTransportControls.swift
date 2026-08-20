@@ -27,11 +27,16 @@ import AppKit
 ///
 /// Kept deliberately cheap: nothing here runs on the 1 Hz tick. The Now Playing info is
 /// pushed only when the receive state actually changes, so this costs no periodic IPC.
+///
+/// What a press *means* is decided here, not by the accessory — AirPods send `pause` for
+/// every stem press regardless of state, so a literal reading makes the button one-way.
+/// See `handle`.
 @MainActor
 public final class RemoteTransportControls {
     /// Play pressed (resume receiving).
     public var onPlay: (() -> Void)?
-    /// Pause/stop pressed (pause receiving).
+    /// Pause pressed while we are playing (pause receiving). A pause pressed while we are
+    /// already paused calls `onPlay` instead — see `handle`.
     public var onPause: (() -> Void)?
     /// A press the accessory did not resolve to a direction — flip whatever we are doing.
     public var onToggle: (() -> Void)?
@@ -60,43 +65,33 @@ public final class RemoteTransportControls {
 
         let center = MPRemoteCommandCenter.shared()
 
+        // Every one of these routes through `handle`, which is where the direction of the
+        // press is actually decided — the accessory's own idea of it cannot be trusted.
         center.playCommand.isEnabled = true
         _ = center.playCommand.addTarget { [weak self] _ in
-            Task { @MainActor in
-                self?.record("play")
-                self?.onPlay?()
-            }
+            Task { @MainActor in self?.handle("play", .play) }
             return .success
         }
         center.pauseCommand.isEnabled = true
         _ = center.pauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in
-                self?.record("pause")
-                self?.onPause?()
-            }
+            Task { @MainActor in self?.handle("pause", .pause) }
             return .success
         }
-        // The one AirPods send for a single stem press in most states; some firmware/route
-        // combinations send play or pause instead, which is why all three are registered
-        // rather than just this one.
+        // Registered because Control Center and some accessories do send it. AirPods, as it
+        // turns out, never do — see `handle`.
         center.togglePlayPauseCommand.isEnabled = true
         _ = center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in
-                self?.record("play/pause")
-                self?.onToggle?()
-            }
+            Task { @MainActor in self?.handle("play/pause", .toggle) }
             return .success
         }
-        // Stop is handled again — carefully. Leaving it UNhandled did not stop the system
-        // routing one; it just meant the press vanished into a system-level route pause
-        // while our own state stayed "playing". So: treat it as a pause, then immediately
-        // re-stake the Now Playing claim, because a routed stop is what ends the session.
-        // If `lastCommand` comes back reading "stop", this is the path the headset uses.
+        // A routed stop ends the now-playing session, so it is handled as a pause and
+        // immediately followed by re-staking the claim. Leaving it UNhandled did not stop
+        // the system routing one; it just meant the press vanished into a system-level
+        // route pause while our own state stayed "playing".
         center.stopCommand.isEnabled = true
         _ = center.stopCommand.addTarget { [weak self] _ in
             Task { @MainActor in
-                self?.record("stop")
-                self?.onPause?()
+                self?.handle("stop", .pause)
                 self?.reassert()
             }
             return .success
@@ -210,6 +205,43 @@ public final class RemoteTransportControls {
 
     private func record(_ name: String) {
         lastCommand = (name, Date())
+    }
+
+    /// Which way a routed command asks the transport to move.
+    private enum Press { case play, pause, toggle }
+
+    /// When the last press was acted on, so one physical press that arrives as two commands
+    /// only moves the state once.
+    private var lastHandledAt: Date?
+
+    /// Decide what a routed command means and apply it.
+    ///
+    /// Confirmed on hardware (AirPods, 2026-08-20): a single stem press always arrives as
+    /// `pause`, in **every** state. The accessory never sends `play` or `togglePlayPause`,
+    /// whatever we publish as our playback state. Taken literally that makes the button
+    /// one-way — the first press pauses and every press after it is a no-op, which is
+    /// exactly the "it disconnects but never reconnects" symptom. So a `pause` arriving
+    /// while we are ALREADY paused is treated as the resume it can only have meant.
+    ///
+    /// Control Center and the lock screen are unaffected by that reinterpretation: they
+    /// send a real `play` when paused, and never send `pause` twice in a row.
+    private func handle(_ name: String, _ press: Press) {
+        record(name)
+
+        // One press can arrive as two commands (a stop *and* a pause). Only the first moves
+        // anything; the window is short enough that two deliberate taps both land.
+        let now = Date()
+        if let lastHandledAt, now.timeIntervalSince(lastHandledAt) < 0.5 { return }
+        lastHandledAt = now
+
+        switch press {
+        case .play:
+            onPlay?()
+        case .pause:
+            if published?.playing == false { onPlay?() } else { onPause?() }
+        case .toggle:
+            onToggle?()
+        }
     }
 
     /// Publish the current state again even though it has not changed, defeating the
