@@ -72,6 +72,13 @@ public final class ReceiverSettings {
         set { defaults.set(newValue, forKey: "volume") }
     }
 
+    /// Extra playback gain in dB (0 = off). Stored as the raw decibel step so an unknown
+    /// value from a future build reads back as "off" rather than a silent misconfiguration.
+    public var volumeBoostDb: Int {
+        get { defaults.integer(forKey: "volumeBoostDb") }
+        set { defaults.set(newValue, forKey: "volumeBoostDb") }
+    }
+
     public var cuesEnabled: Bool {
         get { defaults.object(forKey: "cuesEnabled") == nil ? true : defaults.bool(forKey: "cuesEnabled") }
         set { defaults.set(newValue, forKey: "cuesEnabled") }

@@ -9,8 +9,6 @@ public struct ReceiverRootView: View {
     @FocusState private var addPeerFocused: Bool
     @State private var showingAbout = false
     @State private var showingDiagnostics = false
-    @State private var copiedConnectionDetails = false
-    @State private var copyResetTask: Task<Void, Never>?
     @State private var newProfileName = ""
     @FocusState private var profileNameFocused: Bool
     @State private var renamingProfileId: UUID?
@@ -315,20 +313,10 @@ public struct ReceiverRootView: View {
                 // The technical material lives behind this button rather than in the list
                 // above: it is a dozen lines that rewrite every second, and a screen-reader
                 // user arrowing through "am I connected" should not have to pass all of it.
+                // Copying lives in the dialog, next to the numbers it copies — one button
+                // rather than two that copy the same text from different places.
                 Button("Diagnostics") { showingDiagnostics = true }
-                    .accessibilityHint("Opens packet timing, buffer depth and traffic measurements")
-
-                Button(copiedConnectionDetails ? "Copied" : "Copy connection details") {
-                    controller.copyConnectionReport()
-                    copiedConnectionDetails = true
-                    copyResetTask?.cancel()
-                    copyResetTask = Task {
-                        try? await Task.sleep(for: .seconds(2))
-                        guard !Task.isCancelled else { return }
-                        copiedConnectionDetails = false
-                    }
-                }
-                .accessibilityHint("Copies the status above and the diagnostics as text")
+                    .accessibilityHint("Opens packet timing, buffer depth and traffic measurements, and a button to copy them")
             } header: {
                 Text("Connection")
             }
@@ -451,15 +439,21 @@ public struct ReceiverRootView: View {
     private var audioSection: some View {
         Section {
             HStack {
+                // Hidden from VoiceOver: the slider carries the same word as its own label,
+                // and two elements saying "Volume" makes the row read it twice. Same reason
+                // the trailing "ms" text below is hidden.
                 Text("Volume")
+                    .accessibilityHidden(true)
                 Slider(value: $controller.volume, in: 0...1, step: 0.05)
                     .accessibilityLabel("Volume")
                     .accessibilityValue("\(Int(controller.volume * 100)) percent")
             }
+            VolumeBoostPicker(controller: controller)
             Toggle("Mute", isOn: $controller.isMuted)
 
             HStack {
                 Text("Maximum delay")
+                    .accessibilityHidden(true)
                 Slider(value: Binding(
                     get: { Double(controller.targetLatencyMs) },
                     set: { controller.targetLatencyMs = Int($0) }
@@ -548,6 +542,20 @@ public struct ReceiverRootView: View {
 // Observation re-runs them only when something they actually read changes. The parent still
 // re-renders every second by design (uptime and traffic rates are live) — the isolation is
 // what keeps the open menu stable underneath it.
+
+private struct VolumeBoostPicker: View {
+    @Bindable var controller: ReceiverController
+
+    var body: some View {
+        Picker("Extra volume", selection: $controller.volumeBoost) {
+            ForEach(VolumeBoost.allCases) { boost in
+                Text(boost.displayName).tag(boost)
+            }
+        }
+        .pickerStyle(.menu)
+        .accessibilityHint("Makes a quiet sender louder. The limiter keeps peaks from clipping, but a large boost on already-loud audio will distort.")
+    }
+}
 
 private struct StartupProfilePicker: View {
     @Bindable var controller: ReceiverController

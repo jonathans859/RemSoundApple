@@ -155,6 +155,16 @@ public final class ReceiverController {
         }
     }
 
+    /// Extra playback gain for quiet senders, on top of `volume`. Persisted; deliberately
+    /// NOT part of a profile — like volume and the other audio options, it belongs to the
+    /// device you are listening on, not to the connection setup.
+    public var volumeBoost: VolumeBoost {
+        didSet {
+            mixer.boost = volumeBoost
+            settings.volumeBoostDb = volumeBoost.rawValue
+        }
+    }
+
     public var isMuted = false {
         didSet { mixer.isMuted = isMuted }
     }
@@ -339,6 +349,7 @@ public final class ReceiverController {
         // After the overlay above, so a startup profile reads as applied right away.
         lastAppliedProfileId = settings.lastAppliedProfileId
         volume = settings.volume
+        volumeBoost = VolumeBoost(rawValue: settings.volumeBoostDb) ?? .off
         targetLatencyMs = settings.targetLatencyMs
         cuesEnabled = settings.cuesEnabled
         autoTuneLatencyEnabled = settings.autoTuneLatencyEnabled
@@ -352,6 +363,7 @@ public final class ReceiverController {
         output = AudioOutput(mixer: engine.mixer)
 
         mixer.volume = volume
+        mixer.boost = volumeBoost
         mixer.setTargetLatencyMs(targetLatencyMs)
         cues.enabled = cuesEnabled
         // didSet does not fire for the assignments above (init), so push the persisted

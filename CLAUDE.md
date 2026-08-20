@@ -145,6 +145,11 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   (`drainOnLower: false`) setter. Upstream v5.9's "raise arrives in seconds" fast-approach is
   NOT ported — that fixes their drift resampler's depth feedback, which this port has no
   equivalent of; here a raise fills at whatever rate audio arrives.
+- **Volume boost** (2026-08-20): `VolumeBoost` (off / +3 / +6 / +12 dB) multiplies into the
+  mixer gain BEFORE the soft limiter, so a boost compresses instead of clipping. Discrete
+  steps, not a wider volume slider — 0-400 % is ~80 VoiceOver swipes wide, and one control
+  mixing "volume" with "gain that distorts" hides that the top of the range is not free.
+  Device-local like volume; deliberately NOT in profiles.
 - Mic send: Opus-only, one mixed lane, 48 kHz stereo 192 kbps (RESTRICTED_LOWDELAY,
   complexity 10, VBR, FEC, 10 % loss bias) — mirrors the Windows sender. One endpoint per
   selected peer (two paths of one machine would double its sessions). Outbound audio uses

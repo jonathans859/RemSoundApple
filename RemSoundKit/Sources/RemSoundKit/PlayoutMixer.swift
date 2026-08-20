@@ -1,6 +1,32 @@
 import Foundation
 import os
 
+/// Optional make-up gain applied on top of the volume control, for senders whose stream is
+/// simply quiet at 100 %.
+///
+/// Discrete decibel steps rather than a longer volume slider: a 0–400 % slider is 80 swipes
+/// wide under VoiceOver, and folding "normal volume" together with "gain that can distort"
+/// into one control hides the fact that the top of the range is not free. The mixer's soft
+/// limiter still catches the peaks, so a boost cannot clip — it compresses instead.
+public enum VolumeBoost: Int, CaseIterable, Identifiable, Sendable {
+    case off = 0
+    case plus3 = 3
+    case plus6 = 6
+    case plus12 = 12
+
+    public var id: Int { rawValue }
+
+    /// Linear gain for this decibel step (0 dB = 1.0, +6 dB ≈ 2.0, +12 dB ≈ 4.0).
+    public var gain: Float {
+        rawValue == 0 ? 1 : Float(pow(10.0, Double(rawValue) / 20.0))
+    }
+
+    /// Plain label — VoiceOver reads "+6 dB" as "plus 6 D B", which is what it is.
+    public var displayName: String {
+        rawValue == 0 ? "Off" : "+\(rawValue) dB"
+    }
+}
+
 /// Multi-source mix bus, mirroring the Windows `PlayoutEngine`: one `SessionPlayout` per
 /// active stream, all summed at render time, then volume / mute / soft limiter. The render
 /// callback (`render`) runs on the audio thread; session add/remove takes a short lock and
@@ -17,6 +43,9 @@ public final class PlayoutMixer {
 
     /// 0…1 linear volume, applied post-mix. Atomic enough for a float on the render thread.
     public var volume: Float = 1.0
+    /// Extra make-up gain multiplied in with `volume`, ahead of the limiter, so a boost
+    /// compresses rather than clips. Same render-thread read as `volume`.
+    public var boost: VolumeBoost = .off
     public var isMuted = false
 
     /// Target latency in ms applied to every (current and future) session buffer.
@@ -175,7 +204,7 @@ public final class PlayoutMixer {
             return
         }
 
-        let gain = volume
+        let gain = volume * boost.gain
         for i in 0..<sampleCount {
             var sample = output[i] * gain
             let magnitude = abs(sample)

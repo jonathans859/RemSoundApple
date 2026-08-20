@@ -38,7 +38,7 @@ struct DiagnosticsView: View {
                 }
 
                 Section {
-                    Button(copied ? "Copied" : "Copy diagnostics") {
+                    Button(copied ? "Copied" : "Copy all details") {
                         controller.copyConnectionReport()
                         copied = true
                         copyResetTask?.cancel()
@@ -48,7 +48,7 @@ struct DiagnosticsView: View {
                             copied = false
                         }
                     }
-                    .accessibilityHint("Copies the connection status and all of these measurements as text")
+                    .accessibilityHint("Copies the connection status from the previous screen and all of these measurements as text")
                 }
             }
             .formStyle(.grouped)
