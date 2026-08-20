@@ -8,6 +8,7 @@ public struct ReceiverRootView: View {
     @State private var newPeerHost = ""
     @FocusState private var addPeerFocused: Bool
     @State private var showingAbout = false
+    @State private var showingDiagnostics = false
     @State private var copiedConnectionDetails = false
     @State private var copyResetTask: Task<Void, Never>?
     @State private var newProfileName = ""
@@ -82,6 +83,9 @@ public struct ReceiverRootView: View {
             }
             .sheet(isPresented: $showingAbout) {
                 AboutView()
+            }
+            .sheet(isPresented: $showingDiagnostics) {
+                DiagnosticsView(controller: controller)
             }
         }
 #if os(iOS)
@@ -308,11 +312,12 @@ public struct ReceiverRootView: View {
                         .accessibilityAddTraits(.updatesFrequently)
                 }
 
-                // These lines are the raw material of a bug report, and they refresh every
-                // second — selecting them by hand is impractical on iOS and fiddly on macOS.
-                // Confirmation is doubled up deliberately: `copyConnectionReport` posts a
-                // VoiceOver announcement on iOS, and the label flip covers macOS, where
-                // announcements from a background LSUIElement app are unreliable.
+                // The technical material lives behind this button rather than in the list
+                // above: it is a dozen lines that rewrite every second, and a screen-reader
+                // user arrowing through "am I connected" should not have to pass all of it.
+                Button("Diagnostics") { showingDiagnostics = true }
+                    .accessibilityHint("Opens packet timing, buffer depth and traffic measurements")
+
                 Button(copiedConnectionDetails ? "Copied" : "Copy connection details") {
                     controller.copyConnectionReport()
                     copiedConnectionDetails = true
@@ -323,7 +328,7 @@ public struct ReceiverRootView: View {
                         copiedConnectionDetails = false
                     }
                 }
-                .accessibilityHint("Copies the status and connection details above as text")
+                .accessibilityHint("Copies the status above and the diagnostics as text")
             } header: {
                 Text("Connection")
             }
@@ -481,9 +486,6 @@ public struct ReceiverRootView: View {
 
             Toggle("Connection sounds", isOn: $controller.cuesEnabled)
                 .accessibilityHint("Plays a sound when a peer connects or disconnects")
-
-            Toggle("Network diagnostics", isOn: $controller.networkDiagnosticsEnabled)
-                .accessibilityHint("Adds lost packets, packet timing and the sender's codec mode to the connection details on the Connectivity tab")
 
 #if os(iOS)
             Toggle("Don't mix with other sounds", isOn: $controller.exclusiveAudio)

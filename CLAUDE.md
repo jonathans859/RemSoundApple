@@ -270,7 +270,13 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   it would pass vacuously),
   `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a four-tab
   `TabView`: **Connectivity** = status/peers/add-peer (its tab bar item exposes the live
-  traffic rates as its accessibility value, `controller.trafficSummary`), **Send &
+  traffic rates as its accessibility value, `controller.trafficSummary`; the Connection
+  section shows ONLY general status — `controller.connectionDetails` — while the technical
+  measurements live in `controller.diagnosticDetails` behind a Diagnostics button that opens
+  `DiagnosticsView.swift`, because a dozen lines rewriting every second make the list
+  tedious to arrow through when the question is just "am I connected". Both halves are
+  collected regardless of whether the dialog is open, and `copyConnectionReport` copies
+  both), **Send &
   Receive** = receive toggle/mic send/password, **Audio** = playback options,
   **Profiles** = saved snapshots (apply = row tap; update/rename/delete = context menu +
   VoiceOver actions, no swipe — pitfall 14; the drift-checked `controller.appliedProfile` drives a "Currently applied" row

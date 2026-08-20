@@ -57,9 +57,14 @@ public final class ReceiverController {
     public private(set) var statusSummary = "Stopped"
     public private(set) var isRunning = false
     public private(set) var lastError: String?
-    /// Windows-style connection details ("Connected to 1 peer", per-peer ping, uptime,
-    /// rates, totals, buffer/output latency), refreshed once a second.
+    /// The at-a-glance connection state — who is connected, their ping, uptime. Kept short
+    /// on purpose: this is the list a screen-reader user arrows through every time they open
+    /// the app, so the packet-level material lives in `diagnosticDetails` instead.
     public private(set) var connectionDetails: [String] = []
+    /// The technical panel behind the Diagnostics button: traffic, buffer depth, glitch and
+    /// packet counters, timing, codec mode. Same 1 Hz tick; collected whether or not anyone
+    /// is looking, so opening the dialog shows real history rather than starting from zero.
+    public private(set) var diagnosticDetails: [String] = []
     /// Inputs the user can pick for microphone sending. Refreshed when the hardware set
     /// changes (route change / device list notifications), at start, and on send start —
     /// never on a timer; enumeration IPC alongside live playback causes audible glitches.
@@ -201,13 +206,6 @@ public final class ReceiverController {
         }
     }
 
-    /// Show the packet-level network lines in the connection panel. Display only — the
-    /// counters are collected either way, so turning this on mid-session shows real history
-    /// rather than starting from zero.
-    public var networkDiagnosticsEnabled: Bool {
-        didSet { settings.networkDiagnosticsEnabled = networkDiagnosticsEnabled }
-    }
-
     /// iOS: take sole control of audio (drop `.mixWithOthers`) so playback and the network
     /// survive the screen locking, at the cost of interrupting other apps' audio. Persisted;
     /// a no-op on macOS.
@@ -344,7 +342,6 @@ public final class ReceiverController {
         targetLatencyMs = settings.targetLatencyMs
         cuesEnabled = settings.cuesEnabled
         autoTuneLatencyEnabled = settings.autoTuneLatencyEnabled
-        networkDiagnosticsEnabled = settings.networkDiagnosticsEnabled
         password = settings.password
         exclusiveAudio = settings.exclusiveAudio
         receiveEnabled = settings.receiveEnabled
@@ -776,6 +773,7 @@ public final class ReceiverController {
         guard isRunning else {
             refreshPeerList()
             if !connectionDetails.isEmpty { connectionDetails = [] }
+            if !diagnosticDetails.isEmpty { diagnosticDetails = [] }
             if !trafficSummary.isEmpty { trafficSummary = "" }
             return
         }
@@ -927,7 +925,8 @@ public final class ReceiverController {
     }
 
     private func updateConnectionDetails() {
-        var lines: [String] = []
+        var lines: [String] = []   // general status — always on screen
+        var tech: [String] = []    // technical detail — behind the Diagnostics button
 
         // Connected = selected peers whose heartbeat is currently healthy, like Windows.
         // One line per selected peer ROW (a multi-homed peer is pinged on every path; show
@@ -975,18 +974,19 @@ public final class ReceiverController {
             lastBytesSent = sent
             lastRateDate = now
         }
-        lines.append(String(format: "Receiving %.1f kB/s; sending %.1f kB/s", lastRxRateKBs, lastTxRateKBs))
+        tech.append(String(format: "Receiving %.1f kB/s; sending %.1f kB/s", lastRxRateKBs, lastTxRateKBs))
         // Whole numbers for the spoken tab value — decimals are noise read aloud.
         let traffic = String(format: "Receiving %.0f kilobytes per second, sending %.0f kilobytes per second",
                              lastRxRateKBs, lastTxRateKBs)
         if traffic != trafficSummary { trafficSummary = traffic }
-        lines.append(String(format: "Total received %.1f MB; sent %.1f MB",
-                            Double(received) / 1_000_000, Double(sent) / 1_000_000))
+        tech.append(String(format: "Total received %.1f MB; sent %.1f MB",
+                           Double(received) / 1_000_000, Double(sent) / 1_000_000))
 
         if mixer.activeSessionCount > 0 {
-            lines.append(String(format: "Audio buffer %d ms; output latency %.0f ms",
-                                mixer.currentBufferMs, output.reportedOutputLatencyMs))
+            tech.append(String(format: "Audio buffer %d ms; output latency %.0f ms",
+                               mixer.currentBufferMs, output.reportedOutputLatencyMs))
         } else {
+            // Whether audio is playing at all is general status, not diagnostics.
             lines.append("No audio playing")
         }
 
@@ -1002,22 +1002,23 @@ public final class ReceiverController {
             let dropouts = totals.underruns - oldest.underruns
             let trims = totals.trims - oldest.trims
             if dropouts == 0 && trims == 0 {
-                lines.append("No audio dropouts in the last minute")
+                tech.append("No audio dropouts in the last minute")
             } else {
-                lines.append("Last minute: \(dropouts) audio dropout\(dropouts == 1 ? "" : "s"), \(trims) buffer trim\(trims == 1 ? "" : "s")")
+                tech.append("Last minute: \(dropouts) audio dropout\(dropouts == 1 ? "" : "s"), \(trims) buffer trim\(trims == 1 ? "" : "s")")
             }
             // Duration, not just frequency. Raising the buffer on a jittery link can leave the
             // dropout COUNT unchanged while making each one far shorter — a difference the
             // listener hears clearly and a count alone reports as "no improvement".
             let concealed = totals.concealedMs - oldest.concealedMs
             if concealed > 0 {
-                lines.append("Silence inserted last minute: \(concealed) ms")
+                tech.append("Silence inserted last minute: \(concealed) ms")
             }
         }
 
-        appendNetworkDiagnostics(to: &lines)
+        appendNetworkDiagnostics(to: &tech)
 
         if lines != connectionDetails { connectionDetails = lines }
+        if tech != diagnosticDetails { diagnosticDetails = tech }
     }
 
     /// The whole connection panel as pasteable plain text, with a timestamp and the app
@@ -1137,7 +1138,7 @@ public final class ReceiverController {
     /// packets were lost or merely arrived late, and the fixes differ completely (redundancy
     /// on the sender vs. a deeper buffer here).
     private func appendNetworkDiagnostics(to lines: inout [String]) {
-        guard networkDiagnosticsEnabled, mixer.activeSessionCount > 0,
+        guard mixer.activeSessionCount > 0,
               let oldest = packetSamples.first, let latest = packetSamples.last else { return }
         let stats = latest.stats
 

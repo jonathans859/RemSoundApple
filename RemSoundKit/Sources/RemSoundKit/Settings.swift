@@ -99,15 +99,6 @@ public final class ReceiverSettings {
         set { defaults.set(newValue, forKey: "autoTuneLatencyEnabled") }
     }
 
-    /// Add packet-level network lines (loss, reordering, arrival gaps, sender codec mode) to
-    /// the connection panel. Default on: they are what distinguishes "the network dropped
-    /// packets" from "the jitter buffer was too small for the network's timing", and the two
-    /// have completely different fixes.
-    public var networkDiagnosticsEnabled: Bool {
-        get { defaults.object(forKey: "networkDiagnosticsEnabled") == nil ? true : defaults.bool(forKey: "networkDiagnosticsEnabled") }
-        set { defaults.set(newValue, forKey: "networkDiagnosticsEnabled") }
-    }
-
     /// iOS: hold the audio session exclusively (no `.mixWithOthers`) so playback — and the
     /// UDP socket under it — survives the screen locking. Default off = mix-friendly.
     public var exclusiveAudio: Bool {
