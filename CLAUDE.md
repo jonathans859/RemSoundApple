@@ -159,16 +159,23 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   has nothing to arbitrate and the press goes to another app. Keeping `playbackState =
   .paused` (rather than clearing the info) while paused is what keeps the *resume* press
   coming to us; `AudioOutput` never stopping is what keeps the session active underneath it.
-  Everything except play/pause/toggle is explicitly disabled, so an AirPods double-press
-  ("next track") is a no-op here instead of leaking. Pushed only on state change — never on
-  the 1 Hz tick. **Two traps, both found on hardware 2026-08-20 (first build: pause worked,
-  resume never did):** `stopCommand` must stay UNhandled and `MPNowPlayingInfoPropertyIsLiveStream`
-  must stay UNset. Stop is terminal — once the system routes one, the now-playing session is
-  over and no later press is delivered — and `IsLiveStream` is what puts a stop button where
-  pause would be, so setting it turns every pause into that terminal stop. Never "fix" the
-  missing scrubber by declaring a live stream; omitting the duration already removes it.
-  `reassert()` re-publishes the item on app activation, because the change-gate otherwise
-  makes a slot lost to the system unrecoverable without a relaunch.
+  Pushed only on state change — never on the 1 Hz tick. `reassert()` re-publishes the item
+  on app activation, because the change-gate otherwise makes a slot lost to the system
+  unrecoverable without a relaunch. Seek/scrub/skip stay disabled; next/previous are
+  registered but change nothing (an AirPods double-press is "next track").
+  **Confirmed trap: `MPNowPlayingInfoPropertyIsLiveStream` must stay UNset.** It puts a stop
+  button where pause would be, and a routed stop ends the now-playing session — with it set,
+  Control Center could pause but never resume. Never "fix" the missing scrubber by declaring
+  a live stream; omitting the duration already removes it.
+  **Open on hardware (2026-08-20):** Control Center works both ways, but an AirPods stem
+  press stops the audio WITHOUT reaching the app (our state stays "playing", later presses
+  do nothing). Unhandling `stopCommand` did not change that, so stop is handled again — as a
+  pause followed by an immediate `reassert()` — and every registered command now records
+  itself in `RemoteTransportControls.lastCommand`, surfaced in the Diagnostics panel next to
+  the last `AudioOutput` event (`ReceiverController.appendTransportDiagnostics`). That line
+  is there to separate "the system routed us something we ignored" from "nothing was routed
+  and the system paused the route itself" — they look identical from outside and need
+  opposite fixes. Do not delete it until the headset path is settled.
   Untestable in CI and on the dev machine: verify on real hardware.
 - Mic send: Opus-only, one mixed lane, 48 kHz stereo 192 kbps (RESTRICTED_LOWDELAY,
   complexity 10, VBR, FEC, 10 % loss bias) — mirrors the Windows sender. One endpoint per

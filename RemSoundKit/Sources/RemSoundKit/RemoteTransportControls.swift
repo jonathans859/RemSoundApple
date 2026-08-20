@@ -42,6 +42,13 @@ public final class RemoteTransportControls {
     /// App-activation observer, so returning to the app can reclaim a lost Now Playing slot.
     private var activationObserver: NSObjectProtocol?
 
+    /// The last command the system actually routed to us, for the Diagnostics panel. This
+    /// exists because the failure mode here is *silence*: when a headset press does nothing,
+    /// there is no way to tell "the system sent a command we ignored" from "the system never
+    /// sent anything and paused the route itself" — and those need opposite fixes. Every
+    /// command we register records itself here, including the ones that change no state.
+    public private(set) var lastCommand: (name: String, at: Date)?
+
     public init() {}
 
 #if canImport(MediaPlayer)
@@ -55,20 +62,56 @@ public final class RemoteTransportControls {
 
         center.playCommand.isEnabled = true
         _ = center.playCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.onPlay?() }
+            Task { @MainActor in
+                self?.record("play")
+                self?.onPlay?()
+            }
             return .success
         }
         center.pauseCommand.isEnabled = true
         _ = center.pauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.onPause?() }
+            Task { @MainActor in
+                self?.record("pause")
+                self?.onPause?()
+            }
             return .success
         }
-        // The one AirPods actually send for a single stem press in most states; some
-        // firmware/route combinations send play or pause instead, which is why all three
-        // are registered rather than just this one.
+        // The one AirPods send for a single stem press in most states; some firmware/route
+        // combinations send play or pause instead, which is why all three are registered
+        // rather than just this one.
         center.togglePlayPauseCommand.isEnabled = true
         _ = center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.onToggle?() }
+            Task { @MainActor in
+                self?.record("play/pause")
+                self?.onToggle?()
+            }
+            return .success
+        }
+        // Stop is handled again — carefully. Leaving it UNhandled did not stop the system
+        // routing one; it just meant the press vanished into a system-level route pause
+        // while our own state stayed "playing". So: treat it as a pause, then immediately
+        // re-stake the Now Playing claim, because a routed stop is what ends the session.
+        // If `lastCommand` comes back reading "stop", this is the path the headset uses.
+        center.stopCommand.isEnabled = true
+        _ = center.stopCommand.addTarget { [weak self] _ in
+            Task { @MainActor in
+                self?.record("stop")
+                self?.onPause?()
+                self?.reassert()
+            }
+            return .success
+        }
+        // Registered ONLY to be observed: an AirPods double-press is "next track", and if a
+        // single press is arriving as one of these we need to see it rather than infer it.
+        // Deliberately no state change — skipping means nothing for a live stream.
+        center.nextTrackCommand.isEnabled = true
+        _ = center.nextTrackCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.record("next track") }
+            return .success
+        }
+        center.previousTrackCommand.isEnabled = true
+        _ = center.previousTrackCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.record("previous track") }
             return .success
         }
         // Everything else is explicitly OFF. A double-press is "next track" on AirPods; left
@@ -76,14 +119,7 @@ public final class RemoteTransportControls {
         // app. Disabled commands also drop their buttons from the Control Center / lock
         // screen presentation.
         //
-        // `stopCommand` is in that list ON PURPOSE (it was handled here until 2026-08-20 and
-        // that was the bug): stop is *terminal*. Once the system routes a stop, playback is
-        // over as far as it is concerned, our now-playing item goes away, and the next press
-        // has nowhere to land — pause worked exactly once and resume did nothing forever
-        // after.
         let unwanted: [MPRemoteCommand] = [
-            center.stopCommand,
-            center.nextTrackCommand, center.previousTrackCommand,
             center.skipForwardCommand, center.skipBackwardCommand,
             center.seekForwardCommand, center.seekBackwardCommand,
             center.changePlaybackPositionCommand,
@@ -125,6 +161,7 @@ public final class RemoteTransportControls {
         let center = MPRemoteCommandCenter.shared()
         let ours: [MPRemoteCommand] = [
             center.playCommand, center.pauseCommand, center.togglePlayPauseCommand,
+            center.stopCommand, center.nextTrackCommand, center.previousTrackCommand,
         ]
         for command in ours {
             command.removeTarget(nil) // nil = all targets this app registered
@@ -169,6 +206,10 @@ public final class RemoteTransportControls {
         // audio session), and on iOS it is what keeps us the Now Playing app while paused —
         // which is the whole point: the *resume* press has to reach us too.
         MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+    }
+
+    private func record(_ name: String) {
+        lastCommand = (name, Date())
     }
 
     /// Publish the current state again even though it has not changed, defeating the

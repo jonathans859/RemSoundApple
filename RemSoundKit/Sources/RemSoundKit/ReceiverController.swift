@@ -370,6 +370,12 @@ public final class ReceiverController {
     /// Last decision, for the diagnostics panel.
     private(set) var lastAutoTuneNote: String?
 
+    /// Last thing the audio engine reported (interruption, route change, media-services
+    /// reset, start/stop). Shown in the Diagnostics panel: when a headset press stops the
+    /// audio without changing our state, this is what says whether the system interrupted
+    /// the session behind our back or nothing happened at that layer at all.
+    private var lastAudioEvent: (message: String, at: Date)?
+
     public init() {
         // Startup profile (if configured): rewrite the persisted settings BEFORE they are
         // read below — rewriting-then-loading avoids every didSet/engine side effect.
@@ -412,6 +418,10 @@ public final class ReceiverController {
         remoteControls.onToggle = { [weak self] in
             guard let self else { return }
             self.setReceiveFromTransport(!self.receiveEnabled)
+        }
+
+        output.onDiagnostic = { [weak self] message in
+            Task { @MainActor [weak self] in self?.lastAudioEvent = (message, Date()) }
         }
 
         engine.onHeartbeatReceived = { [heartbeat] buffer, length, remote in
@@ -1072,6 +1082,7 @@ public final class ReceiverController {
             }
         }
 
+        appendTransportDiagnostics(to: &tech, now: now)
         appendNetworkDiagnostics(to: &tech)
 
         if lines != connectionDetails { connectionDetails = lines }
@@ -1346,6 +1357,27 @@ public final class ReceiverController {
         case .stale: return 1
         case .unknown: return 2
         case .unreachable: return 3
+        }
+    }
+
+    /// Diagnostics for the headset / lock-screen transport. Deliberately reports the
+    /// *absence* of a command too: "nothing has been routed to us" and "we were sent
+    /// something and ignored it" look identical from the outside, and they need opposite
+    /// fixes.
+    private func appendTransportDiagnostics(to tech: inout [String], now: Date) {
+        guard headsetTransportControls else {
+            tech.append("Headset controls: off")
+            return
+        }
+        if let command = remoteControls.lastCommand {
+            let age = Int(now.timeIntervalSince(command.at).rounded())
+            tech.append("Headset controls: last button was \(command.name), \(age) second\(age == 1 ? "" : "s") ago")
+        } else {
+            tech.append("Headset controls: on, no button press received yet")
+        }
+        if let event = lastAudioEvent {
+            let age = Int(now.timeIntervalSince(event.at).rounded())
+            tech.append("Audio engine: \(event.message), \(age) second\(age == 1 ? "" : "s") ago")
         }
     }
 
