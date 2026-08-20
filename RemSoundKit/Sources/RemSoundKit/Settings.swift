@@ -106,11 +106,16 @@ public final class ReceiverSettings {
         set { defaults.set(newValue, forKey: "autoTuneLatencyEnabled") }
     }
 
-    /// iOS: hold the audio session exclusively (no `.mixWithOthers`) so playback — and the
-    /// UDP socket under it — survives the screen locking. Default off = mix-friendly.
-    public var exclusiveAudio: Bool {
-        get { defaults.bool(forKey: "exclusiveAudio") }
-        set { defaults.set(newValue, forKey: "exclusiveAudio") }
+    /// Let a headset button (an AirPods stem press), the Mac's media keys, or the lock
+    /// screen / Control Center transport pause and resume receiving. Default **on**: it
+    /// costs nothing when unused, and the app already holds the audio session exclusively,
+    /// so it is the natural owner of the play button while it is running.
+    public var headsetTransportControls: Bool {
+        get {
+            defaults.object(forKey: "headsetTransportControls") == nil
+                ? true : defaults.bool(forKey: "headsetTransportControls")
+        }
+        set { defaults.set(newValue, forKey: "headsetTransportControls") }
     }
 
     /// Stable id of the input the user picked for microphone sending (see

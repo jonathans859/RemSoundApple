@@ -130,6 +130,9 @@ public final class ReceiverController {
             engine.setPlaybackEnabled(receiveEnabled)
             discovery.setCapabilities(canSend: sendEnabled, canReceive: receiveEnabled)
             if receiveEnabled && !isRunning { start() }
+            // Whatever moved this — the UI, a profile, a Shortcut, or a headset press —
+            // the lock-screen play button must not be left showing the opposite state.
+            updateNowPlaying()
             refreshNow()
         }
     }
@@ -177,6 +180,35 @@ public final class ReceiverController {
         announce(isMuted ? "Audio muted" : "Audio unmuted")
     }
 
+    /// A transport press arrived from outside the app (AirPods stem, media key, lock
+    /// screen). Announced for the same reason `toggleMute` is: the press comes from
+    /// somewhere the receive toggle is not focused — or not even on screen — so the state
+    /// change would otherwise be silent for a screen-reader user.
+    private func setReceiveFromTransport(_ enabled: Bool) {
+        guard receiveEnabled != enabled else { return }
+        receiveEnabled = enabled // didSet re-publishes the now-playing state
+        announce(enabled ? "Receiving audio" : "Receiving paused")
+    }
+
+    /// Claim or release the system transport, following the setting and whether the
+    /// receiver is up at all. Idempotent — safe to call from either trigger.
+    private func applyRemoteControls() {
+        guard headsetTransportControls, isRunning else {
+            remoteControls.deactivate()
+            return
+        }
+        remoteControls.activate()
+        updateNowPlaying()
+    }
+
+    /// Push the receive state to the lock screen / Control Center. Cheap and change-gated
+    /// inside `RemoteTransportControls`, and deliberately NOT on the 1 Hz tick.
+    private func updateNowPlaying() {
+        remoteControls.update(
+            isPlaying: receiveEnabled,
+            detail: receiveEnabled ? "Receiving audio" : "Receiving paused")
+    }
+
     public var targetLatencyMs: Int {
         didSet {
             // Auto-tune moves this too. When it does, the change is runtime state, not a
@@ -216,13 +248,14 @@ public final class ReceiverController {
         }
     }
 
-    /// iOS: take sole control of audio (drop `.mixWithOthers`) so playback and the network
-    /// survive the screen locking, at the cost of interrupting other apps' audio. Persisted;
-    /// a no-op on macOS.
-    public var exclusiveAudio: Bool {
+    /// Let an AirPods stem press (or the Mac's media keys, or the lock-screen / Control
+    /// Center transport) pause and resume receiving. Persisted, default on.
+    /// See `RemoteTransportControls`.
+    public var headsetTransportControls: Bool {
         didSet {
-            settings.exclusiveAudio = exclusiveAudio
-            output.setExclusiveAudio(exclusiveAudio)
+            guard headsetTransportControls != oldValue else { return }
+            settings.headsetTransportControls = headsetTransportControls
+            applyRemoteControls()
         }
     }
 
@@ -272,6 +305,7 @@ public final class ReceiverController {
     private let discovery = PeerDiscoveryService()
     private let heartbeat = HeartbeatService()
     private let cues = CuePlayer()
+    private let remoteControls = RemoteTransportControls()
     private let sendEngine = AudioSendEngine()
     private let microphone = MicrophoneCapture()
     private var sendTargetCount = 0
@@ -354,7 +388,7 @@ public final class ReceiverController {
         cuesEnabled = settings.cuesEnabled
         autoTuneLatencyEnabled = settings.autoTuneLatencyEnabled
         password = settings.password
-        exclusiveAudio = settings.exclusiveAudio
+        headsetTransportControls = settings.headsetTransportControls
         receiveEnabled = settings.receiveEnabled
         // Loaded into the pending flag, not sendEnabled itself: capture must not start
         // until the engines are up (end of the first start()); didSet is skipped in init
@@ -367,9 +401,18 @@ public final class ReceiverController {
         mixer.setTargetLatencyMs(targetLatencyMs)
         cues.enabled = cuesEnabled
         // didSet does not fire for the assignments above (init), so push the persisted
-        // exclusive-audio and receive-playback choices into the services explicitly.
-        output.setExclusiveAudio(exclusiveAudio)
+        // receive-playback choice into the engine explicitly.
         engine.setPlaybackEnabled(receiveEnabled)
+
+        // Headset / lock-screen transport. The commands are only registered once the
+        // receiver is actually running (`applyRemoteControls` in `start()`); wiring the
+        // handlers here just says what they do.
+        remoteControls.onPlay = { [weak self] in self?.setReceiveFromTransport(true) }
+        remoteControls.onPause = { [weak self] in self?.setReceiveFromTransport(false) }
+        remoteControls.onToggle = { [weak self] in
+            guard let self else { return }
+            self.setReceiveFromTransport(!self.receiveEnabled)
+        }
 
         engine.onHeartbeatReceived = { [heartbeat] buffer, length, remote in
             heartbeat.handleInjectedPacket(buffer, length: length, remote: remote)
@@ -452,6 +495,7 @@ public final class ReceiverController {
         discovery.start(displayName: Self.deviceName(), audioPort: settings.listenPort)
         discovery.setCapabilities(canSend: sendEnabled, canReceive: receiveEnabled)
         isRunning = true
+        applyRemoteControls()
         applyPeerSelection()
         resolveManualPeers()
 
@@ -480,6 +524,7 @@ public final class ReceiverController {
         refreshTask = nil
         discovery.stop()
         heartbeat.stop()
+        remoteControls.deactivate()
         output.stop()
         engine.stop()
         isRunning = false

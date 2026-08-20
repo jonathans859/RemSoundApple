@@ -7,13 +7,14 @@ import UIKit
 /// Renders the mix bus through AVAudioEngine via an AVAudioSourceNode pulling 48 kHz
 /// interleaved stereo float32 from the `PlayoutMixer`.
 ///
-/// iOS specifics: configures an AVAudioSession with the `.playback` category and the
-/// `.mixWithOthers` option (which, combined with the `audio` background mode in the app's
-/// Info.plist, keeps audio running with the screen locked or the app in the background AND
-/// lets RemSound play alongside apps like Spotify instead of being interrupted by them) and
-/// asks for a short IO buffer for low output latency. Interruptions (calls, Siri), engine
-/// configuration changes, route changes, returning to the foreground, and media-services
-/// resets all restart the engine so audio never stays dead after another app grabs focus.
+/// iOS specifics: configures an AVAudioSession with the `.playback` category and NO
+/// `.mixWithOthers` — RemSound is always the primary audio client, which (combined with the
+/// `audio` background mode in the app's Info.plist) keeps audio running with the screen
+/// locked or the app in the background and makes the app eligible to receive headset
+/// transport presses. It also asks for a short IO buffer for low output latency.
+/// Interruptions (calls, Siri), engine configuration changes, route changes, returning to
+/// the foreground, and media-services resets all restart the engine so audio never stays
+/// dead after another app grabs focus.
 public final class AudioOutput {
     /// Upper bound on frames rendered per inner loop; the interleaved scratch is sized to
     /// this. IO buffers are far smaller (~256 frames at 5 ms), larger requests are chunked.
@@ -131,23 +132,6 @@ public final class AudioOutput {
     }
 
 #if os(iOS)
-    /// When true the session drops `.mixWithOthers`: RemSound becomes the PRIMARY audio
-    /// client. That is what keeps a locked iPhone streaming — iOS is willing to suspend a
-    /// backgrounded app whose mixable session it deems silent and to let the network radio
-    /// power-save under it, which kills the UDP stream (and our heartbeats) until the screen
-    /// wakes. Exclusive playback holds the device awake the same way a music app does.
-    /// Cost: other apps' audio is interrupted while RemSound runs, so this is opt-in.
-    private var exclusiveAudio = false
-
-    public func setExclusiveAudio(_ exclusive: Bool) {
-        guard exclusiveAudio != exclusive else { return }
-        exclusiveAudio = exclusive
-        guard isRunning else { return } // start() applies the right category itself
-        applySessionCategory()
-        // The category change re-routes audio, which can stop a running engine.
-        if let engine, !engine.isRunning { try? engine.start() }
-    }
-
     /// Adaptive IO buffer duration (battery). The render callback fires once per IO buffer,
     /// so a 5 ms buffer wakes the CPU ~200×/s — and the engine is deliberately never stopped
     /// (locked decision: stopping deactivates the shared session, killing background survival
@@ -192,23 +176,24 @@ public final class AudioOutput {
 
     private func applySessionCategory() {
         let session = AVAudioSession.sharedInstance()
+        // No `.mixWithOthers` in either branch: RemSound holds the session exclusively.
+        // That is what keeps a locked iPhone streaming — iOS is willing to suspend a
+        // backgrounded app whose mixable session it deems silent, and to let the network
+        // radio power-save under it, which kills the UDP stream (and our heartbeats) until
+        // the screen wakes. It is also what makes the app eligible to be the system's Now
+        // Playing app, i.e. to receive AirPods stem presses (`RemoteTransportControls`).
+        // Cost, accepted by the user 2026-08-20 when the opt-in toggle was dropped: other
+        // apps' audio is interrupted while RemSound runs, and theirs interrupts us — the
+        // interruption observers below are what bring us back.
         if recordingMode {
             // .defaultToSpeaker: playAndRecord otherwise routes to the earpiece.
             // .allowBluetooth (HFP) is what makes AirPods microphones usable;
             // .allowBluetoothA2DP keeps full-quality output when only receiving on them.
-            // .mixWithOthers so other apps' audio isn't cut off (and doesn't cut us off).
-            // Exclusive audio drops .mixWithOthers here too (locked-screen streaming).
-            var options: AVAudioSession.CategoryOptions =
-                [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
-            if !exclusiveAudio { options.insert(.mixWithOthers) }
-            try? session.setCategory(.playAndRecord, mode: .default, options: options)
-        } else {
-            // .mixWithOthers is the key to playing alongside apps like Spotify: without it,
-            // any other app starting playback interrupts us and iOS never sends a resume when
-            // the user switches back, so audio stays dead until relaunch. Exclusive audio
-            // trades that away for locked-screen survival (see `exclusiveAudio` above).
             try? session.setCategory(
-                .playback, mode: .default, options: exclusiveAudio ? [] : [.mixWithOthers])
+                .playAndRecord, mode: .default,
+                options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
+        } else {
+            try? session.setCategory(.playback, mode: .default, options: [])
         }
     }
 
@@ -274,10 +259,6 @@ public final class AudioOutput {
     }
 
 #else
-    /// macOS has no AVAudioSession — exclusive audio is an iOS-only concept; accept and
-    /// ignore so the shared controller doesn't need platform conditionals.
-    public func setExclusiveAudio(_ exclusive: Bool) {}
-
     /// macOS has no AVAudioSession IO-buffer preference to adapt (the HAL negotiates it), so
     /// the adaptive-cadence lever is iOS-only; accept and ignore for a uniform controller API.
     public func setLowLatencyDemand(_ demand: Bool) {}

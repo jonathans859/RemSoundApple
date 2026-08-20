@@ -150,6 +150,18 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   steps, not a wider volume slider — 0-400 % is ~80 VoiceOver swipes wide, and one control
   mixing "volume" with "gain that distorts" hides that the top of the range is not free.
   Device-local like volume; deliberately NOT in profiles.
+- **Headset transport controls** (2026-08-20, `RemoteTransportControls.swift`): an AirPods
+  stem press, a Mac media key, or the lock-screen / Control Center play-pause button pauses
+  and resumes **`receiveEnabled`** (not mute — the sender should see an honest CanReceive).
+  Setting `headsetTransportControls`, default **on**, device-local, not in profiles. Two
+  halves are both required and neither is optional: registered `MPRemoteCommandCenter`
+  handlers AND published `MPNowPlayingInfoCenter` info — with no now-playing item the system
+  has nothing to arbitrate and the press goes to another app. Keeping `playbackState =
+  .paused` (rather than clearing the info) while paused is what keeps the *resume* press
+  coming to us; `AudioOutput` never stopping is what keeps the session active underneath it.
+  Everything except play/pause/stop/toggle is explicitly disabled, so an AirPods double-press
+  ("next track") is a no-op here instead of leaking. Pushed only on state change — never on
+  the 1 Hz tick. Untestable in CI and on the dev machine: verify on real hardware.
 - Mic send: Opus-only, one mixed lane, 48 kHz stereo 192 kbps (RESTRICTED_LOWDELAY,
   complexity 10, VBR, FEC, 10 % loss bias) — mirrors the Windows sender. One endpoint per
   selected peer (two paths of one machine would double its sessions). Outbound audio uses
@@ -205,8 +217,15 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
    target (causes sustained underruns on bursty VPN paths) — see `SessionPlayout.write`.
 9. iOS suspends a locked/backgrounded app whose audio session is `.mixWithOthers` (and
    lets the radio power-save under it) — inbound UDP and our heartbeats die until screen
-   wake. The opt-in **Exclusive audio** setting drops `.mixWithOthers` to survive the lock
-   screen; both modes are deliberate, don't remove either (`AudioOutput.setExclusiveAudio`).
+   wake. The session is therefore **always exclusive** (never `.mixWithOthers`, in either
+   category branch of `AudioOutput.applySessionCategory`). The opt-in "Don't mix with other
+   sounds" toggle was dropped 2026-08-20 (user: the mixable mode buys nothing), and
+   exclusivity is now load-bearing twice over — a `.mixWithOthers` app is ALSO ineligible to
+   be the system's Now Playing app, i.e. to receive headset transport presses. Never
+   reintroduce it without retiring that feature too. Cost, accepted: another app's playback
+   interrupts us; the existing interruption / route-change / didBecomeActive observers are
+   the recovery path, and `.ended` without `.shouldResume` is deliberately NOT auto-resumed
+   (we would interrupt the app that just took over, and ping-pong with it).
 10. Connect/disconnect cues must keep the Windows hysteresis rule (connected = audio within
     3 s OR healthy heartbeat; lost = no audio AND heartbeat unreachable ~5 s; in between
     holds state) — a bare audio-window check fires false disconnect+connect pairs on
@@ -262,6 +281,7 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   `OpusStreamEncoder.swift` (`RemOpusShim` C target wraps variadic `opus_encoder_ctl`).
 - App layer: `ReceiverController.swift` (@MainActor façade, 1 Hz refresh tick; the apps and
   the Shortcuts actions share ONE instance via `ReceiverController.shared`),
+  `RemoteTransportControls.swift` (headset / lock-screen play-pause → `receiveEnabled`),
   `Apps/Shared/RemSoundIntents.swift` (Shortcuts actions: volume up/down, receiving
   on/off + toggle, mute set + toggle, plus the `AppShortcutsProvider` with Siri phrases —
   compiled into BOTH app targets, deliberately NOT in RemSoundKit: SPM-library-hosted App

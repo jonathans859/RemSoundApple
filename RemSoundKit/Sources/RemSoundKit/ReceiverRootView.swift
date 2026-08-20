@@ -482,14 +482,17 @@ public struct ReceiverRootView: View {
                 .accessibilityHint("Plays a sound when a peer connects or disconnects")
 
 #if os(iOS)
-            Toggle("Don't mix with other sounds", isOn: $controller.exclusiveAudio)
-                .accessibilityHint("When on, RemSound interrupts other apps' audio and is interrupted by them, which also helps keep RemSound running while the screen is locked. When off, RemSound and other apps' sound can play at the same time.")
+            Toggle("Pause with headset or lock screen", isOn: $controller.headsetTransportControls)
+                .accessibilityHint("When on, pressing the stem of an AirPod, or the play and pause button on the lock screen or in Control Center, stops receiving audio; pressing it again starts receiving again.")
+#else
+            Toggle("Pause with headset or media keys", isOn: $controller.headsetTransportControls)
+                .accessibilityHint("When on, pressing the stem of an AirPod, or the play and pause key on the keyboard, stops receiving audio; pressing it again starts receiving again.")
 #endif
         } header: {
             Text("Playback")
         } footer: {
 #if os(iOS)
-            Text("On: RemSound won't play alongside other sounds — whichever one starts, the other stops. This also tends to keep RemSound running while the screen is locked. Off: other apps' sound can play at the same time as RemSound.")
+            Text("RemSound always takes sole control of the audio: whichever starts playing — RemSound or another app — stops the other. That is also what keeps RemSound running while the screen is locked.")
 #else
             EmptyView()
 #endif
