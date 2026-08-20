@@ -159,9 +159,17 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   has nothing to arbitrate and the press goes to another app. Keeping `playbackState =
   .paused` (rather than clearing the info) while paused is what keeps the *resume* press
   coming to us; `AudioOutput` never stopping is what keeps the session active underneath it.
-  Everything except play/pause/stop/toggle is explicitly disabled, so an AirPods double-press
+  Everything except play/pause/toggle is explicitly disabled, so an AirPods double-press
   ("next track") is a no-op here instead of leaking. Pushed only on state change — never on
-  the 1 Hz tick. Untestable in CI and on the dev machine: verify on real hardware.
+  the 1 Hz tick. **Two traps, both found on hardware 2026-08-20 (first build: pause worked,
+  resume never did):** `stopCommand` must stay UNhandled and `MPNowPlayingInfoPropertyIsLiveStream`
+  must stay UNset. Stop is terminal — once the system routes one, the now-playing session is
+  over and no later press is delivered — and `IsLiveStream` is what puts a stop button where
+  pause would be, so setting it turns every pause into that terminal stop. Never "fix" the
+  missing scrubber by declaring a live stream; omitting the duration already removes it.
+  `reassert()` re-publishes the item on app activation, because the change-gate otherwise
+  makes a slot lost to the system unrecoverable without a relaunch.
+  Untestable in CI and on the dev machine: verify on real hardware.
 - Mic send: Opus-only, one mixed lane, 48 kHz stereo 192 kbps (RESTRICTED_LOWDELAY,
   complexity 10, VBR, FEC, 10 % loss bias) — mirrors the Windows sender. One endpoint per
   selected peer (two paths of one machine would double its sessions). Outbound audio uses

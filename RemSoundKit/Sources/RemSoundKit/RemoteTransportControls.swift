@@ -4,6 +4,8 @@ import MediaPlayer
 #endif
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 /// Headset and system transport controls: an AirPods stem press (or the Mac's media keys,
@@ -37,6 +39,8 @@ public final class RemoteTransportControls {
     private var isActive = false
     /// Last published (playing, detail) pair, so an unchanged update does no IPC.
     private var published: (playing: Bool, detail: String)?
+    /// App-activation observer, so returning to the app can reclaim a lost Now Playing slot.
+    private var activationObserver: NSObjectProtocol?
 
     public init() {}
 
@@ -67,23 +71,40 @@ public final class RemoteTransportControls {
             Task { @MainActor in self?.onToggle?() }
             return .success
         }
-        center.stopCommand.isEnabled = true
-        _ = center.stopCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.onPause?() }
-            return .success
-        }
-
         // Everything else is explicitly OFF. A double-press is "next track" on AirPods; left
         // enabled by default it would either do something surprising here or leak to another
-        // app. Disabled commands also drop the buttons from the Control Center / lock screen
-        // presentation, which is what we want for a live stream.
+        // app. Disabled commands also drop their buttons from the Control Center / lock
+        // screen presentation.
+        //
+        // `stopCommand` is in that list ON PURPOSE (it was handled here until 2026-08-20 and
+        // that was the bug): stop is *terminal*. Once the system routes a stop, playback is
+        // over as far as it is concerned, our now-playing item goes away, and the next press
+        // has nowhere to land — pause worked exactly once and resume did nothing forever
+        // after.
         let unwanted: [MPRemoteCommand] = [
+            center.stopCommand,
             center.nextTrackCommand, center.previousTrackCommand,
             center.skipForwardCommand, center.skipBackwardCommand,
             center.seekForwardCommand, center.seekBackwardCommand,
             center.changePlaybackPositionCommand,
         ]
         for command in unwanted { command.isEnabled = false }
+
+        // Returning to the app re-publishes the item verbatim. Nothing in this app clears
+        // it, but the *system* can decide we are no longer the Now Playing app, and then a
+        // press simply never arrives; without this, the change-gate in `update` means we can
+        // never re-stake the claim and only a relaunch fixes it. Bringing the app forward is
+        // exactly what a user does when the button stops working, so it is the right hook.
+#if os(iOS)
+        let activation = UIApplication.didBecomeActiveNotification
+#else
+        let activation = NSApplication.didBecomeActiveNotification
+#endif
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: activation, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.reassert() }
+        }
 
 #if os(iOS)
         // MPRemoteCommandCenter is documented to start delivery on its own once a handler is
@@ -103,12 +124,16 @@ public final class RemoteTransportControls {
 
         let center = MPRemoteCommandCenter.shared()
         let ours: [MPRemoteCommand] = [
-            center.playCommand, center.pauseCommand,
-            center.togglePlayPauseCommand, center.stopCommand,
+            center.playCommand, center.pauseCommand, center.togglePlayPauseCommand,
         ]
         for command in ours {
             command.removeTarget(nil) // nil = all targets this app registered
             command.isEnabled = false
+        }
+
+        if let activationObserver {
+            NotificationCenter.default.removeObserver(activationObserver)
+            self.activationObserver = nil
         }
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -128,12 +153,15 @@ public final class RemoteTransportControls {
         if let published, published.playing == isPlaying, published.detail == detail { return }
         published = (isPlaying, detail)
 
+        // NO `MPNowPlayingInfoPropertyIsLiveStream` here, however true it is of this audio:
+        // for a live stream the system puts a **stop** button where pause would be, and a
+        // stop ends the now-playing session — which cost us the resume press (see the
+        // `unwanted` list in `activate`). Omitting it gets an ordinary play/pause pair.
+        // Duration is omitted, so there is no scrubber to sit stuck at 0:00 either.
         let info: [String: Any] = [
             MPMediaItemPropertyTitle: "RemSound",
             MPMediaItemPropertyArtist: detail,
-            // A live stream has no duration and no scrub position; saying so removes the
-            // scrubber instead of leaving it stuck at 0:00.
-            MPNowPlayingInfoPropertyIsLiveStream: true,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: 0.0,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
         ]
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
@@ -143,6 +171,14 @@ public final class RemoteTransportControls {
         MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
     }
 
+    /// Publish the current state again even though it has not changed, defeating the
+    /// change-gate above. For reclaiming the Now Playing slot, not for routine updates.
+    public func reassert() {
+        guard isActive, let state = published else { return }
+        published = nil
+        update(isPlaying: state.playing, detail: state.detail)
+    }
+
 #else
 
     // No MediaPlayer on this platform (Linux CI): accept and ignore so the controller needs
@@ -150,6 +186,7 @@ public final class RemoteTransportControls {
     public func activate() {}
     public func deactivate() {}
     public func update(isPlaying: Bool, detail: String) {}
+    public func reassert() {}
 
 #endif
 }
