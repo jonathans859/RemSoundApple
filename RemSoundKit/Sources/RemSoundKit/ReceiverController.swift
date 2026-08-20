@@ -313,7 +313,8 @@ public final class ReceiverController {
     // Same sliding-minute treatment for the packet counters. The peak arrival gap is a peak
     // rather than a total, so it is drained from the engine each tick and kept per-sample —
     // the reported figure is the max across the window, not a difference of endpoints.
-    private var packetSamples: [(time: Date, stats: StreamDiagnosticsSnapshot, peakGapMs: Int)] = []
+    private var packetSamples: [(time: Date, stats: StreamDiagnosticsSnapshot,
+                                peakGapMs: Int, peakRenderGapMs: Int)] = []
 
     // --- Continuous auto-tune state (see LatencyAutoTune) ---
     private var autoTuneSamples: [LatencyAutoTune.Sample] = []
@@ -1063,7 +1064,8 @@ public final class ReceiverController {
         // silently widen the window it represents.
         let peakGapMs = engine.diagnostics.drainPeakGapMs()
         let peakRenderGapMs = mixer.drainPeakRenderGapMs()
-        packetSamples.append((time: now, stats: engine.diagnostics.snapshot(), peakGapMs: peakGapMs))
+        packetSamples.append((time: now, stats: engine.diagnostics.snapshot(),
+                              peakGapMs: peakGapMs, peakRenderGapMs: peakRenderGapMs))
         packetSamples.removeAll { now.timeIntervalSince($0.time) > 60 }
 
         // Feed the tuner's own history. Only while audio is actually flowing — a second with
@@ -1171,6 +1173,13 @@ public final class ReceiverController {
             if windowPeak > targetLatencyMs {
                 lines.append("The longest gap was larger than the \(targetLatencyMs) ms maximum delay, "
                              + "so the buffer could not cover it")
+            }
+            // The output device's own callback period is the OTHER half of the auto-tune's
+            // recommendation, and a slow output can inflate the delay as much as the network
+            // does. Shown so the target is decomposable into network vs device.
+            let renderPeak = packetSamples.map { $0.peakRenderGapMs }.max() ?? 0
+            if renderPeak > 0 {
+                lines.append("Longest audio callback gap: \(renderPeak) ms")
             }
         }
 
