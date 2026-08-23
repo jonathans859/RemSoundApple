@@ -1,13 +1,21 @@
 import AVFAudio
 import Foundation
 
-/// Plays the connect / disconnect cue sounds (the same WAVs the Windows app ships). Cues are
-/// an accessibility feature: a screen-reader user hears peers come and go without having to
-/// poll the UI.
+/// Plays the app's cue sounds — peers connecting and disconnecting (the same WAVs the
+/// Windows app ships), plus confirmation of the actions a user can trigger from anywhere:
+/// receiving on/off, sending on/off, and saving a profile. Cues are an accessibility
+/// feature: a screen-reader user hears what happened without having to poll the UI, which
+/// matters most when the change came from outside the app (a headset press, a Shortcut,
+/// the menu bar) and there is no focused control to announce it.
 public final class CuePlayer {
     public enum Cue: String, CaseIterable {
         case connect
         case disconnect
+        case receiveOn = "receive-on"
+        case receiveOff = "receive-off"
+        case sendOn = "send-on"
+        case sendOff = "send-off"
+        case profileSaved = "save"
     }
 
     private var players: [Cue: AVAudioPlayer] = [:]

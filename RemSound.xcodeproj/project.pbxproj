@@ -10,12 +10,22 @@
 		AB1000000000000000000001 /* RemSoundIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF1000000000000000000001 /* RemSoundIOSApp.swift */; };
 		AB1000000000000000000002 /* connect.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000001 /* connect.wav */; };
 		AB1000000000000000000003 /* disconnect.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000002 /* disconnect.wav */; };
+		AB1000000000000000000007 /* receive-on.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000003 /* receive-on.wav */; };
+		AB1000000000000000000008 /* receive-off.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000004 /* receive-off.wav */; };
+		AB1000000000000000000009 /* send-on.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000005 /* send-on.wav */; };
+		AB100000000000000000000A /* send-off.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000006 /* send-off.wav */; };
+		AB100000000000000000000B /* save.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000007 /* save.wav */; };
 		AB1000000000000000000004 /* RemSoundKit in Frameworks */ = {isa = PBXBuildFile; productRef = AC1000000000000000000001 /* RemSoundKit */; };
 		AB1000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AF1000000000000000000003 /* Assets.xcassets */; };
 		AB1000000000000000000006 /* RemSoundIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5000000000000000000001 /* RemSoundIntents.swift */; };
 		AB2000000000000000000001 /* RemSoundMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF2000000000000000000001 /* RemSoundMacApp.swift */; };
 		AB2000000000000000000002 /* connect.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000001 /* connect.wav */; };
 		AB2000000000000000000003 /* disconnect.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000002 /* disconnect.wav */; };
+		AB2000000000000000000007 /* receive-on.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000003 /* receive-on.wav */; };
+		AB2000000000000000000008 /* receive-off.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000004 /* receive-off.wav */; };
+		AB2000000000000000000009 /* send-on.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000005 /* send-on.wav */; };
+		AB200000000000000000000A /* send-off.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000006 /* send-off.wav */; };
+		AB200000000000000000000B /* save.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000007 /* save.wav */; };
 		AB2000000000000000000004 /* RemSoundKit in Frameworks */ = {isa = PBXBuildFile; productRef = AC2000000000000000000001 /* RemSoundKit */; };
 		AB2000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AF2000000000000000000003 /* Assets.xcassets */; };
 		AB2000000000000000000006 /* RemSoundIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5000000000000000000001 /* RemSoundIntents.swift */; };
@@ -33,6 +43,11 @@
 		AF3000000000000000000001 /* connect.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = connect.wav; sourceTree = "<group>"; };
 		AF5000000000000000000001 /* RemSoundIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemSoundIntents.swift; sourceTree = "<group>"; };
 		AF3000000000000000000002 /* disconnect.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = disconnect.wav; sourceTree = "<group>"; };
+		AF3000000000000000000003 /* receive-on.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "receive-on.wav"; sourceTree = "<group>"; };
+		AF3000000000000000000004 /* receive-off.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "receive-off.wav"; sourceTree = "<group>"; };
+		AF3000000000000000000005 /* send-on.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "send-on.wav"; sourceTree = "<group>"; };
+		AF3000000000000000000006 /* send-off.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "send-off.wav"; sourceTree = "<group>"; };
+		AF3000000000000000000007 /* save.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "save.wav"; sourceTree = "<group>"; };
 		AF4000000000000000000001 /* RemSound.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RemSound.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AF4000000000000000000002 /* RemSound.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RemSound.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -120,6 +135,11 @@
 			children = (
 				AF3000000000000000000001 /* connect.wav */,
 				AF3000000000000000000002 /* disconnect.wav */,
+				AF3000000000000000000003 /* receive-on.wav */,
+				AF3000000000000000000004 /* receive-off.wav */,
+				AF3000000000000000000005 /* send-on.wav */,
+				AF3000000000000000000006 /* send-off.wav */,
+				AF3000000000000000000007 /* save.wav */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -206,6 +226,11 @@
 			files = (
 				AB1000000000000000000002 /* connect.wav in Resources */,
 				AB1000000000000000000003 /* disconnect.wav in Resources */,
+				AB1000000000000000000007 /* receive-on.wav in Resources */,
+				AB1000000000000000000008 /* receive-off.wav in Resources */,
+				AB1000000000000000000009 /* send-on.wav in Resources */,
+				AB100000000000000000000A /* send-off.wav in Resources */,
+				AB100000000000000000000B /* save.wav in Resources */,
 				AB1000000000000000000005 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -216,6 +241,11 @@
 			files = (
 				AB2000000000000000000002 /* connect.wav in Resources */,
 				AB2000000000000000000003 /* disconnect.wav in Resources */,
+				AB2000000000000000000007 /* receive-on.wav in Resources */,
+				AB2000000000000000000008 /* receive-off.wav in Resources */,
+				AB2000000000000000000009 /* send-on.wav in Resources */,
+				AB200000000000000000000A /* send-off.wav in Resources */,
+				AB200000000000000000000B /* save.wav in Resources */,
 				AB2000000000000000000005 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

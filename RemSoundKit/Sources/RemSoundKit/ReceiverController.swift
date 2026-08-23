@@ -115,6 +115,9 @@ public final class ReceiverController {
             settings.sendEnabled = sendEnabled
             if sendEnabled { startSending() } else { stopSending() }
             discovery.setCapabilities(canSend: sendEnabled, canReceive: receiveEnabled)
+            // In the didSet, so the cue follows the state wherever it was moved from —
+            // the toggle, the menu bar, a Shortcut, or a profile being applied.
+            cues.play(sendEnabled ? .sendOn : .sendOff)
         }
     }
 
@@ -130,6 +133,7 @@ public final class ReceiverController {
             engine.setPlaybackEnabled(receiveEnabled)
             discovery.setCapabilities(canSend: sendEnabled, canReceive: receiveEnabled)
             if receiveEnabled && !isRunning { start() }
+            cues.play(receiveEnabled ? .receiveOn : .receiveOff)
             // Whatever moved this — the UI, a profile, a Shortcut, or a headset press —
             // the lock-screen play button must not be left showing the opposite state.
             updateNowPlaying()
@@ -241,6 +245,8 @@ public final class ReceiverController {
         }
     }
 
+    /// One switch for every cue sound, not just the connect/disconnect pair it started as:
+    /// receive on/off, send on/off, and profile saved ride it too (see `CuePlayer`).
     public var cuesEnabled: Bool {
         didSet {
             cues.enabled = cuesEnabled
@@ -644,6 +650,7 @@ public final class ReceiverController {
         profileStore.setPassword(password, forProfile: profile.id)
         profileStore.profiles = profiles
         markApplied(profile.id) // the saved profile IS the current configuration
+        cues.play(.profileSaved)
         announce("Profile \(trimmed) saved")
     }
 
@@ -654,6 +661,7 @@ public final class ReceiverController {
         profileStore.setPassword(password, forProfile: id)
         profileStore.profiles = profiles
         markApplied(id) // now identical to the current configuration
+        cues.play(.profileSaved)
         announce("Profile \(profiles[index].name) updated")
     }
 

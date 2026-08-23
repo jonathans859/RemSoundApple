@@ -478,8 +478,8 @@ public struct ReceiverRootView: View {
                     .accessibilityAddTraits(.updatesFrequently)
             }
 
-            Toggle("Connection sounds", isOn: $controller.cuesEnabled)
-                .accessibilityHint("Plays a sound when a peer connects or disconnects")
+            Toggle("Sound effects", isOn: $controller.cuesEnabled)
+                .accessibilityHint("Plays a sound when a peer connects or disconnects, when receiving or sending is turned on or off, and when a profile is saved")
 
 #if os(iOS)
             Toggle("Pause with headset or lock screen", isOn: $controller.headsetTransportControls)
