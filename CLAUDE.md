@@ -153,7 +153,8 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 - **Headset transport controls** (2026-08-20, `RemoteTransportControls.swift`): an AirPods
   stem press, a Mac media key, or the lock-screen / Control Center play-pause button pauses
   and resumes **`receiveEnabled`** (not mute — the sender should see an honest CanReceive).
-  Setting `headsetTransportControls`, default **on**, device-local, not in profiles. Two
+  Setting `headsetTransportControls`, default **on**, device-local, not in profiles — but
+  inert on iOS while "Don't mix with other sounds" is off (pitfall 9). Two
   halves are both required and neither is optional: registered `MPRemoteCommandCenter`
   handlers AND published `MPNowPlayingInfoCenter` info — with no now-playing item the system
   has nothing to arbitrate and the press goes to another app. Keeping `playbackState =
@@ -236,15 +237,23 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
    target (causes sustained underruns on bursty VPN paths) — see `SessionPlayout.write`.
 9. iOS suspends a locked/backgrounded app whose audio session is `.mixWithOthers` (and
    lets the radio power-save under it) — inbound UDP and our heartbeats die until screen
-   wake. The session is therefore **always exclusive** (never `.mixWithOthers`, in either
-   category branch of `AudioOutput.applySessionCategory`). The opt-in "Don't mix with other
-   sounds" toggle was dropped 2026-08-20 (user: the mixable mode buys nothing), and
-   exclusivity is now load-bearing twice over — a `.mixWithOthers` app is ALSO ineligible to
-   be the system's Now Playing app, i.e. to receive headset transport presses. Never
-   reintroduce it without retiring that feature too. Cost, accepted: another app's playback
-   interrupts us; the existing interruption / route-change / didBecomeActive observers are
-   the recovery path, and `.ended` without `.shouldResume` is deliberately NOT auto-resumed
-   (we would interrupt the app that just took over, and ping-pong with it).
+   wake. Such an app is ALSO ineligible to be the system's Now Playing app, i.e. to receive
+   headset transport presses. The session is therefore **exclusive by default**, and the
+   opt-in "Don't mix with other sounds" toggle (`ReceiverSettings.exclusiveAudio`) is the
+   only thing that inserts `.mixWithOthers` — in BOTH category branches of
+   `AudioOutput.applySessionCategory`. Dropped 2026-08-20 ("buys nothing"), **restored
+   2026-08-26** when a tester using the app as a baby monitor lost the stream every time
+   another app started playing; it keeps the pre-0.7 UserDefaults key but now defaults
+   **on** (`object(forKey:) == nil` check — a plain `bool` read would silently hand every
+   existing install the mixable session). Turning it off costs both of the above, so the
+   headset transport is *released* while it is off
+   (`ReceiverController.canClaimTransportControls`) rather than left registered against a
+   system that will never route a press to us, the Playback section says so under the
+   headset toggle, and the Diagnostics panel reports it. Cost of the exclusive default,
+   accepted: another app's playback interrupts us; the existing interruption / route-change
+   / didBecomeActive observers are the recovery path, and `.ended` without `.shouldResume`
+   is deliberately NOT auto-resumed (we would interrupt the app that just took over, and
+   ping-pong with it).
 10. Connect/disconnect cues must keep the Windows hysteresis rule (connected = audio within
     3 s OR healthy heartbeat; lost = no audio AND heartbeat unreachable ~5 s; in between
     holds state) — a bare audio-window check fires false disconnect+connect pairs on

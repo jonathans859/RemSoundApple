@@ -482,8 +482,18 @@ public struct ReceiverRootView: View {
                 .accessibilityHint("Plays a sound when a peer connects or disconnects, when receiving or sending is turned on or off, and when a profile is saved")
 
 #if os(iOS)
+            Toggle("Don't mix with other sounds", isOn: $controller.exclusiveAudio)
+                .accessibilityHint("When on, RemSound interrupts other apps' audio and is interrupted by them, which also helps keep RemSound running while the screen is locked. When off, RemSound and other apps' sound can play at the same time.")
+
             Toggle("Pause with headset or lock screen", isOn: $controller.headsetTransportControls)
                 .accessibilityHint("When on, pressing the stem of an AirPod, or the play and pause button on the lock screen or in Control Center, stops receiving audio; pressing it again starts receiving again.")
+            // Not disabled, just explained: the preference is worth keeping for whenever
+            // sole control goes back on, and a dimmed switch says less than the sentence.
+            if controller.headsetTransportControls && !controller.exclusiveAudio {
+                Text("These buttons need sole control of the audio, so they do nothing while \"Don't mix with other sounds\" is off — the system sends them to whichever app has the sound.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
 #else
             Toggle("Pause with headset or media keys", isOn: $controller.headsetTransportControls)
                 .accessibilityHint("When on, pressing the stem of an AirPod, or the play and pause key on the keyboard, stops receiving audio; pressing it again starts receiving again.")
@@ -492,7 +502,7 @@ public struct ReceiverRootView: View {
             Text("Playback")
         } footer: {
 #if os(iOS)
-            Text("RemSound always takes sole control of the audio: whichever starts playing — RemSound or another app — stops the other. That is also what keeps RemSound running while the screen is locked.")
+            Text("With \"Don't mix with other sounds\" on, whichever starts playing — RemSound or another app — stops the other, and that is also what keeps RemSound running while the screen is locked. With it off, RemSound plays alongside other apps, but iOS may stop it once the screen has been locked for a while.")
 #else
             EmptyView()
 #endif

@@ -26,6 +26,7 @@ final class SettingsDefaultsTests: XCTestCase {
         XCTAssertTrue(settings.receiveEnabled)
         XCTAssertTrue(settings.cuesEnabled)
         XCTAssertTrue(settings.headsetTransportControls)
+        XCTAssertTrue(settings.exclusiveAudio)
     }
 
     func testDefaultOnFlagsRoundTripFalse() {
@@ -33,10 +34,14 @@ final class SettingsDefaultsTests: XCTestCase {
         settings.receiveEnabled = false
         settings.cuesEnabled = false
         settings.headsetTransportControls = false
+        settings.exclusiveAudio = false
 
         let reloaded = ReceiverSettings(defaults: defaults)
         XCTAssertFalse(reloaded.receiveEnabled)
         XCTAssertFalse(reloaded.cuesEnabled)
         XCTAssertFalse(reloaded.headsetTransportControls)
+        // Also the upgrade path: a pre-0.7 install that stored `false` under this same key
+        // keeps mixing, instead of being silently pushed onto the exclusive session.
+        XCTAssertFalse(reloaded.exclusiveAudio)
     }
 }

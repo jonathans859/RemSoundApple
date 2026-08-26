@@ -106,10 +106,29 @@ public final class ReceiverSettings {
         set { defaults.set(newValue, forKey: "autoTuneLatencyEnabled") }
     }
 
+    /// iOS: hold the audio session exclusively (no `.mixWithOthers`) so playback — and the
+    /// UDP socket under it — survives the screen locking, and so the app stays eligible to
+    /// be the system's Now Playing app (see `headsetTransportControls`). Default **on**,
+    /// which is the behaviour 0.7 shipped unconditionally; off lets RemSound play alongside
+    /// another app instead of interrupting it and being interrupted by it.
+    ///
+    /// The key is deliberately the pre-0.7 one: a tester who had turned mixing on back then
+    /// gets their choice back, while an absent key (everyone else) keeps the exclusive
+    /// session they are running today — hence the `object(forKey:)` check, since a plain
+    /// `bool` read would hand every install the mixable session instead.
+    public var exclusiveAudio: Bool {
+        get {
+            defaults.object(forKey: "exclusiveAudio") == nil
+                ? true : defaults.bool(forKey: "exclusiveAudio")
+        }
+        set { defaults.set(newValue, forKey: "exclusiveAudio") }
+    }
+
     /// Let a headset button (an AirPods stem press), the Mac's media keys, or the lock
     /// screen / Control Center transport pause and resume receiving. Default **on**: it
-    /// costs nothing when unused, and the app already holds the audio session exclusively,
-    /// so it is the natural owner of the play button while it is running.
+    /// costs nothing when unused, and while the session is exclusive the app is the natural
+    /// owner of the play button. On iOS it does nothing while `exclusiveAudio` is off — a
+    /// mixable app is not eligible to be the Now Playing app.
     public var headsetTransportControls: Bool {
         get {
             defaults.object(forKey: "headsetTransportControls") == nil

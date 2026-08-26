@@ -194,10 +194,22 @@ public final class ReceiverController {
         announce(enabled ? "Receiving audio" : "Receiving paused")
     }
 
+    /// Whether the app may claim the system transport at all. On iOS that takes the
+    /// exclusive session on top of the setting: a `.mixWithOthers` app is not eligible to be
+    /// the Now Playing app, so with mixing on the press goes to whatever else is playing no
+    /// matter what we register. macOS has no such rule.
+    private var canClaimTransportControls: Bool {
+#if os(iOS)
+        headsetTransportControls && exclusiveAudio
+#else
+        headsetTransportControls
+#endif
+    }
+
     /// Claim or release the system transport, following the setting and whether the
     /// receiver is up at all. Idempotent — safe to call from either trigger.
     private func applyRemoteControls() {
-        guard headsetTransportControls, isRunning else {
+        guard canClaimTransportControls, isRunning else {
             remoteControls.deactivate()
             return
         }
@@ -254,9 +266,25 @@ public final class ReceiverController {
         }
     }
 
+    /// iOS: take sole control of audio (drop `.mixWithOthers`) so playback and the network
+    /// survive the screen locking, at the cost of interrupting other apps' audio — and of
+    /// being interrupted by theirs. Persisted, default on; a no-op on macOS.
+    ///
+    /// It gates the headset transport too: a mixable app is not eligible to be the Now
+    /// Playing app, so the transport is released and re-claimed with this rather than left
+    /// registered against a system that will never route a press to us.
+    public var exclusiveAudio: Bool {
+        didSet {
+            guard exclusiveAudio != oldValue else { return }
+            settings.exclusiveAudio = exclusiveAudio
+            output.setExclusiveAudio(exclusiveAudio)
+            applyRemoteControls()
+        }
+    }
+
     /// Let an AirPods stem press (or the Mac's media keys, or the lock-screen / Control
-    /// Center transport) pause and resume receiving. Persisted, default on.
-    /// See `RemoteTransportControls`.
+    /// Center transport) pause and resume receiving. Persisted, default on. Inactive on iOS
+    /// while `exclusiveAudio` is off. See `RemoteTransportControls`.
     public var headsetTransportControls: Bool {
         didSet {
             guard headsetTransportControls != oldValue else { return }
@@ -400,6 +428,7 @@ public final class ReceiverController {
         cuesEnabled = settings.cuesEnabled
         autoTuneLatencyEnabled = settings.autoTuneLatencyEnabled
         password = settings.password
+        exclusiveAudio = settings.exclusiveAudio
         headsetTransportControls = settings.headsetTransportControls
         receiveEnabled = settings.receiveEnabled
         // Loaded into the pending flag, not sendEnabled itself: capture must not start
@@ -413,7 +442,8 @@ public final class ReceiverController {
         mixer.setTargetLatencyMs(targetLatencyMs)
         cues.enabled = cuesEnabled
         // didSet does not fire for the assignments above (init), so push the persisted
-        // receive-playback choice into the engine explicitly.
+        // exclusive-audio and receive-playback choices into the services explicitly.
+        output.setExclusiveAudio(exclusiveAudio)
         engine.setPlaybackEnabled(receiveEnabled)
 
         // Headset / lock-screen transport. The commands are only registered once the
@@ -1377,6 +1407,14 @@ public final class ReceiverController {
             tech.append("Headset controls: off")
             return
         }
+#if os(iOS)
+        // On but never claimed: worth saying out loud, because from the outside this looks
+        // exactly like a press that was routed elsewhere by the system.
+        guard exclusiveAudio else {
+            tech.append("Headset controls: on, but inactive while RemSound mixes with other sounds")
+            return
+        }
+#endif
         if let command = remoteControls.lastCommand {
             let age = Int(now.timeIntervalSince(command.at).rounded())
             tech.append("Headset controls: last button was \(command.name), \(age) second\(age == 1 ? "" : "s") ago")
