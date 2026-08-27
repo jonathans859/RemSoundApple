@@ -263,9 +263,24 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
    system that will never route a press to us, the Playback section says so under the
    headset toggle, and the Diagnostics panel reports it. Cost of the exclusive default,
    accepted: another app's playback interrupts us; the existing interruption / route-change
-   / didBecomeActive observers are the recovery path, and `.ended` without `.shouldResume`
-   is deliberately NOT auto-resumed (we would interrupt the app that just took over, and
-   ping-pong with it).
+   / didBecomeActive observers are the recovery path. `.ended` without `.shouldResume` was
+   deliberately NOT auto-resumed (we would interrupt the app that just took over, and
+   ping-pong with it) until **2026-08-27**, when a device test showed that is exactly what
+   another media app sends: Spotify stopping left RemSound silent AND holding no transport
+   claim, so a stem press restarted *Spotify* — even after it was force-quit, because a
+   silent app is not eligible and iOS parks the slot on the last app that played. The rule
+   is now gated, not absolute: resume when `AVAudioSession.isOtherAudioPlaying` is **false**
+   (nothing is playing, so nobody is interrupted and there is nothing to ping-pong with);
+   stay down while it is true. `AudioOutput.pollInterruptionRecovery`, called from the
+   functional half of the 1 Hz tick (**no new timer**), covers the two cases the notification
+   does not: an app that pauses without deactivating its session never sends `.ended` at all,
+   and an `.ended` that arrives while they are still playing needs picking up later. It reads
+   one session property per second and ONLY while `interrupted` — that flag, and the
+   recovery path it drives, stay outside `#if os(iOS)` (pitfall 12). `resumeEngine` reports
+   and fires `onPlaybackRecovered` only when the start actually took: the poll retries every
+   second and every attempt fails during a phone call, so an unconditional log would claim a
+   recovery that never happened. Unavoidable limitation: a backgrounded silent app can be
+   suspended, and a suspended app runs no tick — then only opening the app recovers.
 10. Connect/disconnect cues must keep the Windows hysteresis rule (connected = audio within
     3 s OR healthy heartbeat; lost = no audio AND heartbeat unreachable ~5 s; in between
     holds state) — a bare audio-window check fires false disconnect+connect pairs on

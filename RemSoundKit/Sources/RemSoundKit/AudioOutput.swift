@@ -30,6 +30,12 @@ public final class AudioOutput {
     private var renderFormat: AVAudioFormat?
     private var observers: [NSObjectProtocol] = []
 
+    /// True from an audio-session interruption until playback actually comes back. iOS only
+    /// in practice (nothing sets it on macOS), but declared unconditionally so the recovery
+    /// path below stays free of platform conditionals — pitfall 12 is what happens when that
+    /// path grows an `#if os(iOS)`. Drives `pollInterruptionRecovery`.
+    private var interrupted = false
+
     public var onDiagnostic: ((String) -> Void)?
 
     /// Fired when playback was brought back after it had actually stopped — an interruption
@@ -121,12 +127,17 @@ public final class AudioOutput {
         self.engine = engine
         self.sourceNode = source
         isRunning = true
+        // A fresh engine is by definition not interrupted. This matters for the rebuild the
+        // media-services reset does: leaving the flag set there would make the recovery poll
+        // read a session property every second for the rest of the process's life.
+        interrupted = false
         installEngineObservers()
         onDiagnostic?("audio output started")
     }
 
     public func stop() {
         guard isRunning else { return }
+        interrupted = false
         engine?.stop()
         if let source = sourceNode { engine?.detach(source) }
         engine = nil
@@ -157,6 +168,32 @@ public final class AudioOutput {
     /// which is why this is a user-facing switch. Off buys coexistence and gives up both of
     /// the above.
     private var exclusiveAudio = true
+
+    /// Backstop for an interruption we were never told had ended, or that ended while the
+    /// interrupting app was still playing. Both are real: an app that merely *pauses* often
+    /// never deactivates its session, so no `.ended` arrives at all, and an `.ended` that
+    /// carries no `.shouldResume` finds us with no other signal to act on.
+    ///
+    /// Called once a second from the functional half of `ReceiverController`'s existing
+    /// refresh tick — no new timer, and no wakeup that was not already happening. It costs
+    /// one session-property read per second, and ONLY while we are down: `interrupted` is
+    /// false the rest of the time, so this is not a hot path. (`isOtherAudioPlaying` is a
+    /// session property, not HAL device enumeration — pitfall 5 is about the latter.)
+    ///
+    /// Resuming here can interrupt an app that is paused but still holds an active session.
+    /// That is the intent, not an accident: the user asked for RemSound back, and nothing is
+    /// audibly playing at that moment. The gate is what keeps the original "don't ping-pong
+    /// with the app that just took over" rule intact — while they are actually playing we
+    /// stay down.
+    ///
+    /// Limitation, unavoidable: a backgrounded silent app can be suspended outright, and a
+    /// suspended app runs no tick. When that happens nothing self-recovers and opening the
+    /// app is still the way back.
+    public func pollInterruptionRecovery() {
+        guard isRunning, interrupted, let engine, !engine.isRunning else { return }
+        guard !AVAudioSession.sharedInstance().isOtherAudioPlaying else { return }
+        resumeEngine("audio resumed once the other app stopped playing")
+    }
 
     public func setExclusiveAudio(_ exclusive: Bool) {
         guard exclusiveAudio != exclusive else { return }
@@ -243,14 +280,25 @@ public final class AudioOutput {
                   let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
             switch type {
             case .began:
+                self.interrupted = true
                 self.engine?.pause()
                 self.onDiagnostic?("audio interrupted")
             case .ended:
-                // Resume when the system asks us to; the didBecomeActive observer is the
-                // backstop for interruptions that end without a resume flag.
                 let optionsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-                if AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume) {
+                let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
+                    .contains(.shouldResume)
+                if shouldResume {
                     self.resumeEngine("audio resumed after interruption")
+                } else if !AVAudioSession.sharedInstance().isOtherAudioPlaying {
+                    // No resume flag, but nothing is playing — see `interrupted`. Confirmed
+                    // on hardware (2026-08-27): another media app ending its playback is
+                    // exactly this case, and ignoring it left the app silent AND holding no
+                    // transport claim until the user opened it.
+                    self.resumeEngine("audio resumed after interruption (no resume flag, nothing else playing)")
+                } else {
+                    // Something else is still playing: staying paused is the original rule,
+                    // and `pollInterruptionRecovery` picks us up when they stop.
+                    self.onDiagnostic?("interruption ended without a resume flag — another app is still playing")
                 }
             @unknown default:
                 break
@@ -298,6 +346,10 @@ public final class AudioOutput {
     /// ignore so the shared controller doesn't need platform conditionals.
     public func setExclusiveAudio(_ exclusive: Bool) {}
 
+    /// No AVAudioSession means no interruptions to recover from; the configuration-change
+    /// observer is macOS's recovery path (pitfall 12). Accept and ignore.
+    public func pollInterruptionRecovery() {}
+
     /// macOS has no AVAudioSession IO-buffer preference to adapt (the HAL negotiates it), so
     /// the adaptive-cadence lever is iOS-only; accept and ignore for a uniform controller API.
     public func setLowLatencyDemand(_ demand: Bool) {}
@@ -341,10 +393,15 @@ public final class AudioOutput {
 #endif
         engine.prepare()
         try? engine.start()
+        // Report only what actually happened. A restart can legitimately fail — the poll
+        // above retries once a second, and during a phone call every attempt fails until the
+        // call ends — so claiming "audio resumed" on each of them would fill the diagnostics
+        // with a recovery that never occurred and hide the fact that we are still down.
+        guard engine.isRunning else { return }
+        interrupted = false
         onDiagnostic?(diagnostic)
-        // Only on a start that actually took: a failed restart leaves us silent, and a
-        // silent app has no claim to stake.
-        if engine.isRunning { onPlaybackRecovered?() }
+        // A silent app has no claim to stake; this is the moment we are eligible again.
+        onPlaybackRecovered?()
     }
 
     private func removeObservers() {

@@ -925,6 +925,10 @@ public final class ReceiverController {
         updateCues()
         updateSendTargets()
         updateIOBufferDemand()
+        // Functional: the only way back from an interruption that ended without telling us,
+        // or that ended while the interrupting app was still playing. Costs one session
+        // property read per second, and only while playback is actually down.
+        output.pollInterruptionRecovery()
         // Functional, not presentational: the peak arrival gap is a read-and-reset value, so
         // sampling only while a UI is on screen would fold a whole backgrounded session into
         // the first sample and report it under a "last minute" label. This app is backgrounded
