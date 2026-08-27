@@ -31,6 +31,18 @@ public final class AudioOutput {
     private var observers: [NSObjectProtocol] = []
 
     public var onDiagnostic: ((String) -> Void)?
+
+    /// Fired when playback was brought back after it had actually stopped — an interruption
+    /// that ended, a route or configuration change, a media-services reset, or returning to
+    /// the foreground. Never fired for a normal start, and never while the engine was
+    /// already running.
+    ///
+    /// It exists for the Now Playing claim: whatever interrupted us is very likely holding
+    /// the system transport now, there is no API to ask who does, and re-publishing only
+    /// works while we are eligible — i.e. playing audio through an exclusive session, which
+    /// is exactly what has just become true again. See `ReceiverController`'s handler.
+    public var onPlaybackRecovered: (() -> Void)?
+
     public private(set) var isRunning = false
 
     /// Best-effort hardware output latency (device latency + IO buffer) in milliseconds,
@@ -257,6 +269,9 @@ public final class AudioOutput {
             self.renderScratch?.deallocate()
             self.renderScratch = nil
             try? self.start()
+            // Rebuilt from nothing — the media daemon that owns the Now Playing item is the
+            // very thing that just restarted, so re-stake the claim like any other recovery.
+            if self.isRunning { self.onPlaybackRecovered?() }
         })
 
         observers.append(center.addObserver(
@@ -327,6 +342,9 @@ public final class AudioOutput {
         engine.prepare()
         try? engine.start()
         onDiagnostic?(diagnostic)
+        // Only on a start that actually took: a failed restart leaves us silent, and a
+        // silent app has no claim to stake.
+        if engine.isRunning { onPlaybackRecovered?() }
     }
 
     private func removeObservers() {

@@ -162,7 +162,19 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   coming to us; `AudioOutput` never stopping is what keeps the session active underneath it.
   Pushed only on state change — never on the 1 Hz tick. `reassert()` re-publishes the item
   on app activation, because the change-gate otherwise makes a slot lost to the system
-  unrecoverable without a relaunch. Seek/scrub/skip stay disabled; next/previous are
+  unrecoverable without a relaunch — and (2026-08-27) on the other edge that can win the
+  slot back: `AudioOutput.onPlaybackRecovered` fires whenever a *stopped* engine is
+  restarted (interruption ended, route/configuration change, media-services reset,
+  foregrounding) and `ReceiverController.reclaimTransportControls` re-publishes there. The
+  app that interrupted us is the Now Playing app and keeps the slot after it stops, so
+  without this the next stem press resumes *it*; eligibility needs us actually playing
+  through an exclusive session, which is exactly what has just become true again. Blind by
+  necessity (no public API asks who holds the slot — MediaRemote is private), so it fires
+  whether or not the slot was lost, and the attempt is reported in Diagnostics.
+  **There is no equivalent while mixing is on** (pitfall 9): a `.mixWithOthers` session is
+  never eligible, so no re-publish can reclaim anything, and making the toggle adaptive
+  would reintroduce the interruption it exists to prevent (we can only react *after* the
+  other app starts). Seek/scrub/skip stay disabled; next/previous are
   registered but change nothing (an AirPods double-press is "next track").
   **Confirmed trap: `MPNowPlayingInfoPropertyIsLiveStream` must stay UNset.** It puts a stop
   button where pause would be, and a routed stop ends the now-playing session — with it set,

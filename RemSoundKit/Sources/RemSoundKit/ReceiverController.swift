@@ -217,6 +217,28 @@ public final class ReceiverController {
         updateNowPlaying()
     }
 
+    /// Re-stake the Now Playing claim after playback came back from something that had
+    /// stopped it (see `AudioOutput.onPlaybackRecovered`).
+    ///
+    /// Whatever interrupted us — a podcast, a call, Music — became the Now Playing app while
+    /// it played, and it keeps that slot after it stops: the next stem press then resumes
+    /// *it*, not us. Until now the only way back was to foreground RemSound, which is what
+    /// `RemoteTransportControls`' activation observer handles. This is the same move on the
+    /// other edge that makes us eligible again — our own audio is playing through an
+    /// exclusive session once more, which is the moment a re-publish can win the
+    /// arbitration.
+    ///
+    /// Blind by necessity: there is no public API to ask who holds the slot, so this fires
+    /// whether or not it was lost. That costs one XPC push on an edge that happens a handful
+    /// of times an hour — nothing like the per-second cadence the change-gate exists to
+    /// prevent. Whether the system actually hands it back is not documented; this is the
+    /// only lever there is, hence the diagnostics line.
+    private func reclaimTransportControls() {
+        guard canClaimTransportControls, isRunning else { return }
+        remoteControls.reassert()
+        lastTransportReclaim = Date()
+    }
+
     /// Push the receive state to the lock screen / Control Center. Cheap and change-gated
     /// inside `RemoteTransportControls`, and deliberately NOT on the 1 Hz tick.
     private func updateNowPlaying() {
@@ -410,6 +432,11 @@ public final class ReceiverController {
     /// the session behind our back or nothing happened at that layer at all.
     private var lastAudioEvent: (message: String, at: Date)?
 
+    /// Last time we re-published the Now Playing item to take the transport back after
+    /// playback recovered. Diagnostics only — the reclaim is invisible when it fails (we
+    /// cannot see who holds the slot), so at least the attempt is on the record.
+    private var lastTransportReclaim: Date?
+
     public init() {
         // Startup profile (if configured): rewrite the persisted settings BEFORE they are
         // read below — rewriting-then-loading avoids every didSet/engine side effect.
@@ -458,6 +485,9 @@ public final class ReceiverController {
 
         output.onDiagnostic = { [weak self] message in
             Task { @MainActor [weak self] in self?.lastAudioEvent = (message, Date()) }
+        }
+        output.onPlaybackRecovered = { [weak self] in
+            Task { @MainActor [weak self] in self?.reclaimTransportControls() }
         }
 
         engine.onHeartbeatReceived = { [heartbeat] buffer, length, remote in
@@ -1420,6 +1450,10 @@ public final class ReceiverController {
             tech.append("Headset controls: last button was \(command.name), \(age) second\(age == 1 ? "" : "s") ago")
         } else {
             tech.append("Headset controls: on, no button press received yet")
+        }
+        if let reclaim = lastTransportReclaim {
+            let age = Int(now.timeIntervalSince(reclaim).rounded())
+            tech.append("Headset controls: reclaimed after audio recovered, \(age) second\(age == 1 ? "" : "s") ago")
         }
         if let event = lastAudioEvent {
             let age = Int(now.timeIntervalSince(event.at).rounded())
