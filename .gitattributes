@@ -1,0 +1,12 @@
+# Authored on Windows, built on Unix CI runners (macOS and Ubuntu). Force LF on
+# everything a runner executes: a CRLF `run:` block turns bash heredoc
+# terminators (EOF, PY) into EOF, which never matches its opener, and $( )
+# substitutions inherit a trailing . It fails in ways that look nothing like
+# a line-ending problem. core.autocrlf usually normalises the committed blob,
+# but only this makes it deterministic regardless of contributor git config.
+* text=auto
+
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sh    text eol=lf
+*.py    text eol=lf
