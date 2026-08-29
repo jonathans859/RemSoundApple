@@ -1,13 +1,13 @@
 name: Build
 
-# Docs-only changes skip CI entirely (skipped only when EVERY changed file matches).
+# PULL REQUESTS ONLY. On a push to main, testflight.yml compiles both platforms
+# against the real SDK and signs them minutes later, so building them unsigned
+# here as well was the same work twice on 10x-billed runners. Pull requests still
+# need it: they have no access to signing secrets, so this is the only place a PR
+# is compiled at all.
+#
+# Docs-only changes skip it entirely (skipped only when EVERY changed file matches).
 on:
-  push:
-    paths-ignore:
-      - "**.md"
-      - ".claude/**"
-      - "LICENSE"
-      - ".gitignore"
   pull_request:
     paths-ignore:
       - "**.md"

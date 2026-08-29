@@ -1,0 +1,48 @@
+name: Release
+
+# Publishing a GitHub release promotes the builds testflight.yml already uploaded
+# for the tagged commit -- no rebuild, byte-identical binaries. The release body
+# becomes the TestFlight "What to Test" text, both platforms are distributed to
+# the external tester group, and the signed IPA and PKG are attached to the
+# release.
+#
+# Two tag forms, because Beta App Review is per marketing version, not per build:
+#   vX.Y.Z    - new marketing version; the first external build waits on review.
+#   vX.Y.Z-bN - re-release of the SAME version from a later commit, usually
+#               review-free. The default tier for small fixes.
+#
+# Re-running this workflow is also the escape hatch when a distribution got
+# stranded: it is idempotent, and needs no rebuild.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write # attach the IPA and PKG to the release
+  actions: read # locate and download the build run's artifacts
+
+jobs:
+  ios:
+    uses: jonathans859/apple-ci/.github/workflows/release.yml@v1
+    secrets: inherit
+    with:
+      app-id: "6787399914"
+      build-workflow: testflight.yml
+      artifact-name: RemSound-ios-ipa
+      platforms: IOS
+      version-source: pbxproj
+      version-file: RemSound.xcodeproj
+      groups: ${{ vars.TESTFLIGHT_EXTERNAL_GROUPS || 'External' }}
+
+  macos:
+    uses: jonathans859/apple-ci/.github/workflows/release.yml@v1
+    secrets: inherit
+    with:
+      app-id: "6787399914"
+      build-workflow: testflight.yml
+      artifact-name: RemSound-macos-pkg
+      platforms: MAC_OS
+      version-source: pbxproj
+      version-file: RemSound.xcodeproj
+      groups: ${{ vars.TESTFLIGHT_EXTERNAL_GROUPS || 'External' }}
