@@ -94,9 +94,9 @@ Repo → Settings → Secrets and variables → Actions → New repository secre
 `testflight.yml` workflow expects exactly these names:
 
 - `APPLE_TEAM_ID` — the 10-character Team ID.
-- `APP_STORE_CONNECT_API_KEY_ID` — the API key's Key ID.
-- `APP_STORE_CONNECT_API_ISSUER_ID` — the Issuer ID.
-- `APP_STORE_CONNECT_API_PRIVATE_KEY` — the full text content of the `.p8` file.
+- `ASC_KEY_ID` — the API key's Key ID.
+- `ASC_ISSUER_ID` — the Issuer ID.
+- `ASC_KEY_P8` — the full text content of the `.p8` file.
 
 Optional repository **variable** (Variables tab, not Secrets):
 

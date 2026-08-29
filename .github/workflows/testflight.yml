@@ -22,11 +22,14 @@ name: TestFlight
 # first macOS upload. fastlane pilot disambiguates the platforms via --app_platform.
 #
 # Signing is Apple *cloud signing*: automatic signing + the App Store Connect API key
-# (must be role Admin) via -allowProvisioningUpdates. Apple holds the distribution
-# certificate's private key; no certificate, .p12, or profile exists in this repo or its
-# secrets. Required secrets:
-#   APPLE_TEAM_ID, APP_STORE_CONNECT_API_KEY_ID, APP_STORE_CONNECT_API_ISSUER_ID,
-#   APP_STORE_CONNECT_API_PRIVATE_KEY
+# (must be role Admin) via -allowProvisioningUpdates. Apple holds the DISTRIBUTION
+# certificate's private key, so no distribution certificate or profile exists here.
+# The ARCHIVE step is a different matter: it signs with an Apple Development identity,
+# which has to be in the runner's keychain, so one shared .p12 is a secret (see the
+# import step). Every repo on this Apple account uses the same key and the same
+# certificate. Required secrets:
+#   APPLE_TEAM_ID, ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8,
+#   APPLE_DEV_CERT_P12, APPLE_DEV_CERT_P12_PASSWORD
 # Optional repository VARIABLE (Settings → Secrets and variables → Actions → Variables):
 #   TESTFLIGHT_EXTERNAL_GROUPS — comma-separated external TestFlight group names that
 #   releases are distributed to (defaults to "Beta"; must match App Store Connect exactly).
@@ -130,59 +133,44 @@ jobs:
       - name: Use the newest installed Xcode (iOS 26 SDK required for App Store uploads)
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
 
-      # xcodebuild's ARCHIVE step signs with an Apple Development identity (only the
-      # export re-sign is cloud-managed distribution signing), and on a throwaway runner
-      # -allowProvisioningUpdates mints a brand-new Development certificate every run —
-      # until the account hits Apple's certificate cap (first hit 2026-07-11, v0.3.0).
-      # Persisting ONE keychain across runs lets every later run reuse the same identity:
-      # new certificates are only minted on a cold cache and when the year-long
-      # certificate expires. The always-unique key + restore-keys prefix means each run
-      # restores the newest keychain AND saves its (possibly updated) state for the next.
-      # The fixed keychain password below only guards a Development-grade key inside this
-      # repo's Actions cache — it cannot distribute anything; the distribution key never
-      # leaves Apple.
-      - name: Reuse the CI signing keychain across runs
-        uses: actions/cache@v6
-        with:
-          path: ~/Library/Keychains/ci-signing.keychain-db
-          key: ci-signing-keychain-${{ github.run_id }}-${{ github.run_attempt }}-ios
-          restore-keys: ci-signing-keychain-
-
-      # A RESTORED keychain arrives locked, and `security set-keychain-settings` on a
-      # locked keychain pops a SecurityAgent GUI prompt that hangs a headless runner
-      # forever (first hit 2026-07-11: both jobs wedged 4.6 h on the first cache
-      # restore) — so unlock-keychain (non-interactive: -p errors instead of prompting)
-      # must run FIRST, and the step carries a timeout with a fresh-keychain fallback.
-      - name: Activate the CI signing keychain
-        id: keychain
-        timeout-minutes: 5
-        continue-on-error: true
+      # xcodebuild's ARCHIVE step signs with an Apple *Development* identity; only the
+      # export re-sign is cloud-managed distribution signing. A throwaway runner has no
+      # such identity, so -allowProvisioningUpdates mints a brand-new certificate every
+      # run until the account-wide cap breaks signing for every repo on the team (first
+      # hit 2026-07-11 for v0.3.0, and again in 2026-08).
+      #
+      # This used to be an actions/cache over a persistent keychain. That leaked three
+      # ways: GitHub evicts a cache untouched for 7 days, the "recreate it" fallback
+      # minted a certificate by design, and the iOS and macOS jobs run in parallel, so a
+      # cold start missed twice. One certificate now lives in a secret and is shared by
+      # every repo on the account. It cannot be per-repo in any case: Apple returns 409
+      # when minting a second Development certificate while one is current, because the
+      # certificate identifies the team, not an app.
+      - name: Import the shared Apple Development certificate
+        env:
+          APPLE_DEV_CERT_P12: ${{ secrets.APPLE_DEV_CERT_P12 }}
+          APPLE_DEV_CERT_P12_PASSWORD: ${{ secrets.APPLE_DEV_CERT_P12_PASSWORD }}
         run: |
-          KEYCHAIN="$HOME/Library/Keychains/ci-signing.keychain-db"
-          if [ ! -f "$KEYCHAIN" ]; then
-            security create-keychain -p remsound-ci "$KEYCHAIN"
-          fi
-          security unlock-keychain -p remsound-ci "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          # Non-interactive codesign access to keys restored from a previous run's cache.
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k remsound-ci "$KEYCHAIN" >/dev/null 2>&1 || true
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
-          security default-keychain -s "$KEYCHAIN"
-          echo "activated=true" >> "$GITHUB_OUTPUT"
-
-      # Corrupt/unusable restored keychain: start over. Costs one freshly minted Apple
-      # Development certificate (the thing the cache exists to avoid) — acceptable on
-      # this rare path, and the re-saved cache makes the next run cheap again.
-      - name: Recreate the signing keychain (restored one failed to activate)
-        if: steps.keychain.outputs.activated != 'true'
-        run: |
-          KEYCHAIN="$HOME/Library/Keychains/ci-signing.keychain-db"
-          rm -f "$KEYCHAIN"
-          security create-keychain -p remsound-ci "$KEYCHAIN"
-          security unlock-keychain -p remsound-ci "$KEYCHAIN"
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          PASSWORD=$(openssl rand -hex 24)
+          security create-keychain -p "$PASSWORD" "$KEYCHAIN"
+          # Unlock BEFORE anything else touches it: keychain settings on a LOCKED
+          # keychain raise a SecurityAgent GUI prompt that hangs a headless runner
+          # forever instead of failing (two jobs once wedged 4.6 h on exactly this).
+          security unlock-keychain -p "$PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
           security default-keychain -s "$KEYCHAIN"
+
+          printf '%s' "$APPLE_DEV_CERT_P12" | base64 --decode > "$RUNNER_TEMP/dev.p12"
+          security import "$RUNNER_TEMP/dev.p12" -k "$KEYCHAIN"             -P "$APPLE_DEV_CERT_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PASSWORD" "$KEYCHAIN" >/dev/null
+
+          # Assert now. A failed import does NOT fail this step, and a revoked or
+          # malformed certificate surfaces ten minutes later as "no signing certificate
+          # found" -- or worse, not at all, while cloud signing mints its own.
+          security find-identity -v -p codesigning | grep -q "Apple Development"             || { echo "::error::Apple Development certificate did not import. Check APPLE_DEV_CERT_P12 / _PASSWORD; the .p12 must be legacy format (-certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1)."; exit 1; }
 
       - name: Derive marketing version and build number
         id: version
@@ -223,12 +211,12 @@ jobs:
 
       - name: Write App Store Connect API key
         env:
-          API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+          API_PRIVATE_KEY: ${{ secrets.ASC_KEY_P8 }}
         run: |
           mkdir -p "$RUNNER_TEMP/asc"
           printf '%s' "$API_PRIVATE_KEY" > "$RUNNER_TEMP/asc/AuthKey.p8"
-          jq -n --arg kid "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
-                --arg iss "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}" \
+          jq -n --arg kid "${{ secrets.ASC_KEY_ID }}" \
+                --arg iss "${{ secrets.ASC_ISSUER_ID }}" \
                 --arg key "$API_PRIVATE_KEY" \
             '{key_id: $kid, issuer_id: $iss, key: $key, duration: 1200, in_house: false}' \
             > "$RUNNER_TEMP/asc/api_key.json"
@@ -243,8 +231,8 @@ jobs:
             -archivePath "$RUNNER_TEMP/RemSound.xcarchive" \
             -allowProvisioningUpdates \
             -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
-            -authenticationKeyID "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
-            -authenticationKeyIssuerID "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}" \
+            -authenticationKeyID "${{ secrets.ASC_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.ASC_ISSUER_ID }}" \
             DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
             MARKETING_VERSION="${{ steps.version.outputs.marketing }}" \
             CURRENT_PROJECT_VERSION="${{ steps.version.outputs.build }}"
@@ -269,8 +257,8 @@ jobs:
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -allowProvisioningUpdates \
             -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
-            -authenticationKeyID "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
-            -authenticationKeyIssuerID "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}"
+            -authenticationKeyID "${{ secrets.ASC_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.ASC_ISSUER_ID }}"
           cp "$RUNNER_TEMP"/export/*.ipa "${{ steps.version.outputs.ipa }}"
 
       - name: Upload to TestFlight (internal testers via automatic distribution)
@@ -348,45 +336,44 @@ jobs:
       - name: Use the newest installed Xcode
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
 
-      # Same certificate-cap avoidance as the iOS job — see the comment there. Both jobs
-      # share the restore-keys prefix, so either platform's keychain (each holding a
-      # reusable Apple Development identity) unblocks the other.
-      - name: Reuse the CI signing keychain across runs
-        uses: actions/cache@v6
-        with:
-          path: ~/Library/Keychains/ci-signing.keychain-db
-          key: ci-signing-keychain-${{ github.run_id }}-${{ github.run_attempt }}-macos
-          restore-keys: ci-signing-keychain-
-
-      # Unlock BEFORE set-keychain-settings — same locked-restored-keychain hang as the
-      # iOS job (see the comment there), same timeout + fresh-keychain fallback.
-      - name: Activate the CI signing keychain
-        id: keychain
-        timeout-minutes: 5
-        continue-on-error: true
+      # xcodebuild's ARCHIVE step signs with an Apple *Development* identity; only the
+      # export re-sign is cloud-managed distribution signing. A throwaway runner has no
+      # such identity, so -allowProvisioningUpdates mints a brand-new certificate every
+      # run until the account-wide cap breaks signing for every repo on the team (first
+      # hit 2026-07-11 for v0.3.0, and again in 2026-08).
+      #
+      # This used to be an actions/cache over a persistent keychain. That leaked three
+      # ways: GitHub evicts a cache untouched for 7 days, the "recreate it" fallback
+      # minted a certificate by design, and the iOS and macOS jobs run in parallel, so a
+      # cold start missed twice. One certificate now lives in a secret and is shared by
+      # every repo on the account. It cannot be per-repo in any case: Apple returns 409
+      # when minting a second Development certificate while one is current, because the
+      # certificate identifies the team, not an app.
+      - name: Import the shared Apple Development certificate
+        env:
+          APPLE_DEV_CERT_P12: ${{ secrets.APPLE_DEV_CERT_P12 }}
+          APPLE_DEV_CERT_P12_PASSWORD: ${{ secrets.APPLE_DEV_CERT_P12_PASSWORD }}
         run: |
-          KEYCHAIN="$HOME/Library/Keychains/ci-signing.keychain-db"
-          if [ ! -f "$KEYCHAIN" ]; then
-            security create-keychain -p remsound-ci "$KEYCHAIN"
-          fi
-          security unlock-keychain -p remsound-ci "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          # Non-interactive codesign access to keys restored from a previous run's cache.
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k remsound-ci "$KEYCHAIN" >/dev/null 2>&1 || true
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
-          security default-keychain -s "$KEYCHAIN"
-          echo "activated=true" >> "$GITHUB_OUTPUT"
-
-      - name: Recreate the signing keychain (restored one failed to activate)
-        if: steps.keychain.outputs.activated != 'true'
-        run: |
-          KEYCHAIN="$HOME/Library/Keychains/ci-signing.keychain-db"
-          rm -f "$KEYCHAIN"
-          security create-keychain -p remsound-ci "$KEYCHAIN"
-          security unlock-keychain -p remsound-ci "$KEYCHAIN"
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          PASSWORD=$(openssl rand -hex 24)
+          security create-keychain -p "$PASSWORD" "$KEYCHAIN"
+          # Unlock BEFORE anything else touches it: keychain settings on a LOCKED
+          # keychain raise a SecurityAgent GUI prompt that hangs a headless runner
+          # forever instead of failing (two jobs once wedged 4.6 h on exactly this).
+          security unlock-keychain -p "$PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
           security default-keychain -s "$KEYCHAIN"
+
+          printf '%s' "$APPLE_DEV_CERT_P12" | base64 --decode > "$RUNNER_TEMP/dev.p12"
+          security import "$RUNNER_TEMP/dev.p12" -k "$KEYCHAIN"             -P "$APPLE_DEV_CERT_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PASSWORD" "$KEYCHAIN" >/dev/null
+
+          # Assert now. A failed import does NOT fail this step, and a revoked or
+          # malformed certificate surfaces ten minutes later as "no signing certificate
+          # found" -- or worse, not at all, while cloud signing mints its own.
+          security find-identity -v -p codesigning | grep -q "Apple Development"             || { echo "::error::Apple Development certificate did not import. Check APPLE_DEV_CERT_P12 / _PASSWORD; the .p12 must be legacy format (-certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1)."; exit 1; }
 
       - name: Derive marketing version and build number
         id: version
@@ -421,12 +408,12 @@ jobs:
 
       - name: Write App Store Connect API key
         env:
-          API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+          API_PRIVATE_KEY: ${{ secrets.ASC_KEY_P8 }}
         run: |
           mkdir -p "$RUNNER_TEMP/asc"
           printf '%s' "$API_PRIVATE_KEY" > "$RUNNER_TEMP/asc/AuthKey.p8"
-          jq -n --arg kid "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
-                --arg iss "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}" \
+          jq -n --arg kid "${{ secrets.ASC_KEY_ID }}" \
+                --arg iss "${{ secrets.ASC_ISSUER_ID }}" \
                 --arg key "$API_PRIVATE_KEY" \
             '{key_id: $kid, issuer_id: $iss, key: $key, duration: 1200, in_house: false}' \
             > "$RUNNER_TEMP/asc/api_key.json"
@@ -508,8 +495,8 @@ jobs:
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -allowProvisioningUpdates \
             -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
-            -authenticationKeyID "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
-            -authenticationKeyIssuerID "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}"
+            -authenticationKeyID "${{ secrets.ASC_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.ASC_ISSUER_ID }}"
           cp "$RUNNER_TEMP"/export/*.pkg "${{ steps.version.outputs.pkg }}"
 
       - name: Upload to TestFlight (internal testers via automatic distribution)
@@ -600,10 +587,10 @@ jobs:
 
       - name: Write App Store Connect API key
         env:
-          API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+          API_PRIVATE_KEY: ${{ secrets.ASC_KEY_P8 }}
         run: |
-          jq -n --arg kid "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}" \
-                --arg iss "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}" \
+          jq -n --arg kid "${{ secrets.ASC_KEY_ID }}" \
+                --arg iss "${{ secrets.ASC_ISSUER_ID }}" \
                 --arg key "$API_PRIVATE_KEY" \
             '{key_id: $kid, issuer_id: $iss, key: $key, duration: 1200, in_house: false}' \
             > api_key.json

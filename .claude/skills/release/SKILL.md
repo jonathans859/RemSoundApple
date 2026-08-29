@@ -63,8 +63,8 @@ see `.claude/agents/release-manager.md`). One-time Apple/secrets setup lives in 
 1. Preflight: `git status` clean, on `main`, `main`'s CI green
    (`gh run list --branch main --limit 3`). Unpushed local commits are fine — they go up
    with the release push — but report that they'll be included. Secrets check
-   (`gh secret list`): `APPLE_TEAM_ID`, `APP_STORE_CONNECT_API_KEY_ID`,
-   `APP_STORE_CONNECT_API_ISSUER_ID`, `APP_STORE_CONNECT_API_PRIVATE_KEY`. If missing,
+   (`gh secret list`): `APPLE_TEAM_ID`, `ASC_KEY_ID`,
+   `ASC_ISSUER_ID`, `ASC_KEY_P8`. If missing,
    stop and point at `plan.md`.
 2. Pick the tier and version: `git describe --tags --abbrev=0` (or `gh release list`)
    for the latest tag. **Default to a same-version re-release** (`vX.Y.Z-bN`, N = next
@@ -127,13 +127,18 @@ see `.claude/agents/release-manager.md`). One-time Apple/secrets setup lives in 
   2026-07-11): xcodebuild's ARCHIVE step signs with an Apple **Development** identity, and
   on an ephemeral runner `-allowProvisioningUpdates` mints a fresh Development certificate
   every run (the private key never persists), until Apple's per-account cap is hit. Fix:
-  the user revokes the CI-minted Apple Development certificates in the portal
-  (developer.apple.com → Certificates; do NOT touch the cloud-managed **Apple
-  Distribution** certificate), then `gh run rerun <id> --failed`. Since 2026-07-11 the
-  workflow persists the signing keychain via actions/cache ("Reuse the CI signing
-  keychain" steps) so a Development identity is REUSED across runs — minting only happens
-  on a cold cache or an expired (~1 year) certificate. If this error nonetheless recurs,
-  check those cache steps are still restoring.
+  the user revokes the CI-minted Apple Development certificates — `asc certificates list
+  --certificate-type DEVELOPMENT` then `asc certificates revoke --id <id> --confirm`, do
+  NOT touch the cloud-managed **Apple Distribution** or the **Developer ID** certificate
+  — then `gh run rerun <id> --failed`. Since 2026-08-29 the workflow imports ONE shared
+  Apple Development certificate from `APPLE_DEV_CERT_P12`, the same certificate every
+  repo on the account uses, so nothing is minted at all. (It previously cached a keychain
+  via actions/cache, which leaked: GitHub evicts a cache untouched for 7 days, the
+  recreate-on-failure path minted by design, and the two signing jobs run in parallel.)
+  **A green build does not prove this is working** — a revoked .p12 still imports cleanly
+  and still passes `find-identity`, which is how the previous certificate's loss went
+  unnoticed for weeks. Verify with `asc certificates list` after a build and confirm no
+  new certificate appeared.
 - **macOS archive — "Your team has no devices from which to generate a provisioning
   profile" + "no Mac App Development provisioning profiles"** (first hit 2026-07-20, the
   iCloud profile-sync change): triggered by giving the macOS target an **App-ID-level
@@ -162,7 +167,7 @@ see `.claude/agents/release-manager.md`). One-time Apple/secrets setup lives in 
   bundle id — one-time, see `plan.md` Phase 1 step 6). Both platform jobs are independent:
   one can succeed while the other fails, so check both before declaring the release done.
 - **Archive — HTTP 401 on `listTeams`**: the API-key secrets don't line up — wrong Key ID /
-  Issuer ID, or a mangled `.p8`. Re-set `APP_STORE_CONNECT_API_PRIVATE_KEY` from the file
+  Issuer ID, or a mangled `.p8`. Re-set `ASC_KEY_P8` from the file
   via stdin (`gh secret set … < AuthKey_XXXX.p8`); brand-new keys take a few minutes to
   activate.
 - **Upload — "Validation failed (409) … iOS 26 SDK"**: Apple's SDK floor. The signing job
