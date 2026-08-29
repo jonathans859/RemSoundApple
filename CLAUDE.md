@@ -29,7 +29,7 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   `TESTFLIGHT_EXTERNAL_GROUPS`, default "Beta"; notes = "What to Test"; IPA + PKG
   attached to the release). To cut a release use the `release` skill (`.claude/skills/release/`) —
   it drives the Sonnet `release-manager` subagent (`.claude/agents/release-manager.md`).
-  One-time setup steps live in `plan.md`; recurring gotchas (Admin key required for cloud
+  One-time setup steps live in `docs/plan.md`; recurring gotchas (Admin key required for cloud
   signing, the Xcode/iOS 26 SDK floor that keeps the signing job on `macos-26`) are in
   the skill's "Known failure modes".
 
