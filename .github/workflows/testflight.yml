@@ -27,10 +27,12 @@ on:
     # these still builds.
     paths-ignore:
       - "**.md"
+      - "docs/**"
       - ".claude/**"
-      - ".github/workflows/**"
+      - ".github/**"
       - "LICENSE"
       - ".gitignore"
+      - ".gitattributes"
   workflow_dispatch:
 
 # Serialize uploads against the one app record. The iOS and macOS jobs of a

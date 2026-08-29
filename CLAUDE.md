@@ -8,7 +8,7 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 ## Build workflow (read this first — development happens on Windows)
 
 - **This machine cannot compile Swift.** Validation happens only on GitHub Actions
-  (`.github/workflows/build.yml`: swift test + unsigned iOS/macOS builds). For CI results,
+  (`.github/workflows/ci.yml`: swift test + unsigned iOS/macOS builds, pull requests only). For CI results,
   ask for the Actions logs or read them via `gh` if installed — never poll the GitHub API.
 - **Commit, but never `git push` unless asked** — the user pushes. LF→CRLF warnings on
   commit are normal; ignore them.

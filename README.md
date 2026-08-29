@@ -54,7 +54,7 @@ TestFlight app (iOS App Store / Mac App Store), then open the link on the device
 | `Apps/iOS/`, `Apps/macOS/` | The two thin app targets (entry point + Info.plist each). |
 | `RemSound.xcodeproj` | Hand-maintained Xcode project with both app targets, referencing `RemSoundKit` as a local package. |
 | `Resources/` | Connect/disconnect cue sounds (from the RemSound repo, MIT). |
-| `.github/workflows/build.yml` | CI: runs the unit tests and builds both apps unsigned on every push. |
+| `.github/workflows/ci.yml` | Pull requests: unit tests plus unsigned builds of both apps. Pushes are covered by `testflight.yml`, which compiles and signs the same code. |
 
 Opus comes from [alta/swift-opus](https://github.com/alta/swift-opus), which builds libopus
 from source through SPM — no binaries in this repo.

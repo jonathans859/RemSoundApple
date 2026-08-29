@@ -1,4 +1,4 @@
-name: Build
+name: CI
 
 # PULL REQUESTS ONLY. On a push to main, testflight.yml compiles both platforms
 # against the real SDK and signs them minutes later, so building them unsigned
