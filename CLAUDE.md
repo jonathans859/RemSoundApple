@@ -338,7 +338,10 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   the Shortcuts actions share ONE instance via `ReceiverController.shared`),
   `RemoteTransportControls.swift` (headset / lock-screen play-pause → `receiveEnabled`),
   `Apps/Shared/RemSoundIntents.swift` (Shortcuts actions: volume up/down, receiving
-  on/off + toggle, mute set + toggle, plus the `AppShortcutsProvider` with Siri phrases —
+  on/off + toggle, mute set + toggle, set startup profile (a `StartupProfileOption`
+  `AppEntity` — the launch choice mixes two fixed cases with the user's runtime profile
+  list, which no `AppEnum` can express; ids "none"/"last"/UUID string are stored inside the
+  user's shortcut, so they must stay stable), plus the `AppShortcutsProvider` with Siri phrases —
   compiled into BOTH app targets, deliberately NOT in RemSoundKit: SPM-library-hosted App
   Intents extract metadata cleanly at build time yet are never surfaced by on-device
   discovery on either platform, even via `AppIntentsPackage` forwarding — burned a full

@@ -133,6 +133,105 @@ struct SetReceivingIntent: AppIntent {
     }
 }
 
+/// The launch choice as a Shortcuts value. It cannot be an `AppEnum`: two of the three
+/// cases are fixed, but the rest are the user's saved profiles, which only exist at
+/// runtime. So it is an entity whose query answers with the same list the Profiles tab's
+/// "Apply at launch" picker shows — the two sentinels plus one row per profile. Their ids
+/// ("none" / "last") can never collide with a profile's UUID string, and they stay stable
+/// because Shortcuts stores the id inside the user's shortcut.
+///
+/// Named `noProfile`/`lastApplied` rather than the obvious `none`: a static `.none` on a
+/// type is a standing trap wherever the value meets an Optional of itself.
+struct StartupProfileOption: AppEntity {
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Startup Profile")
+    static let defaultQuery = StartupProfileOptionQuery()
+
+    /// "none", "last", or a saved profile's UUID string.
+    var id: String
+    var name: String
+
+    var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(name)") }
+
+    static let noProfileId = "none"
+    static let lastAppliedId = "last"
+
+    static let noProfile = StartupProfileOption(id: noProfileId, name: "No profile")
+    static let lastApplied = StartupProfileOption(id: lastAppliedId, name: "Last applied profile")
+
+    var choice: StartupProfileChoice {
+        switch id {
+        case Self.noProfileId: return .off
+        case Self.lastAppliedId: return .lastApplied
+        default: return UUID(uuidString: id).map { StartupProfileChoice.fixed($0) } ?? .off
+        }
+    }
+}
+
+extension StartupProfileOption {
+    // In an extension so the memberwise initialiser above survives.
+    init(profile: ReceiverProfile) {
+        self.init(id: profile.id.uuidString, name: profile.name)
+    }
+
+    /// Every choice the Profiles tab offers, in the same order.
+    @MainActor
+    static var all: [StartupProfileOption] {
+        [.noProfile, .lastApplied] + ReceiverController.shared.profiles.map(StartupProfileOption.init(profile:))
+    }
+}
+
+/// `EntityStringQuery` rather than a plain `EntityQuery` so a spoken or typed profile name
+/// resolves without the user picking from a list.
+struct StartupProfileOptionQuery: EntityStringQuery {
+    @MainActor
+    func entities(for identifiers: [String]) async throws -> [StartupProfileOption] {
+        StartupProfileOption.all.filter { identifiers.contains($0.id) }
+    }
+
+    @MainActor
+    func entities(matching string: String) async throws -> [StartupProfileOption] {
+        StartupProfileOption.all.filter { $0.name.localizedCaseInsensitiveContains(string) }
+    }
+
+    @MainActor
+    func suggestedEntities() async throws -> [StartupProfileOption] {
+        StartupProfileOption.all
+    }
+}
+
+struct SetStartupProfileIntent: AppIntent {
+    static let title: LocalizedStringResource = "Set Startup Profile"
+    static let description = IntentDescription("Chooses which saved profile RemSound applies each time it starts — a specific profile, whichever one was applied most recently, or none.")
+
+    @Parameter(title: "Startup Profile")
+    var profile: StartupProfileOption
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Apply \(\.$profile) at launch")
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let controller = ReceiverController.shared
+        let choice = profile.choice
+        // A shortcut built before the profile was deleted still carries its id. Storing it
+        // would leave a launch choice nothing can satisfy (and one the picker cannot show),
+        // so say so instead — the dialog is the feedback path, not a thrown error.
+        if case .fixed(let id) = choice, !controller.profiles.contains(where: { $0.id == id }) {
+            return .result(dialog: "No profile named \(profile.name) is saved")
+        }
+        controller.startupProfile = choice
+        switch choice {
+        case .off:
+            return .result(dialog: "No profile will be applied at launch")
+        case .lastApplied:
+            return .result(dialog: "The last applied profile will be applied at launch")
+        case .fixed:
+            return .result(dialog: "\(profile.name) will be applied at launch")
+        }
+    }
+}
+
 /// Ready-made App Shortcuts: a RemSound section in the Shortcuts app (no user setup) and
 /// the Siri phrases. The phrase-training build step (AppIntentsSSUTraining) reads the
 /// literal phrase strings from here. Every phrase must contain `\(.applicationName)`.
