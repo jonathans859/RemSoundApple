@@ -14,7 +14,22 @@ public struct PeerListEntry: Identifiable, Hashable, Sendable {
     }
 
     public let id: String
+    /// What to call this peer on screen: the user's own name for it when they set one,
+    /// otherwise the name it announces (or its address, for a peer added by address).
     public let name: String
+    /// The name the peer announces for itself; nil when it never announced one — a peer
+    /// added by address, until discovery matches it. Shown in the rename UI as the name a
+    /// custom one replaces, and what clearing the custom one falls back to.
+    public let machineName: String?
+    /// The user's own name for this peer, when they have set one (`name` already resolves
+    /// to it). nil means the row is showing the peer's own name.
+    public let customName: String?
+    /// Key the custom name is stored under — see `PeerNameBook.identityKey`.
+    public let identityKey: String
+    /// What the peer announces it can do. nil for a peer added by address that discovery
+    /// has not matched to an announcement yet — "we don't know", not "no".
+    public let canSend: Bool?
+    public let canReceive: Bool?
     public let addressString: String
     /// Every endpoint this peer is reachable at — multi-homed peers (LAN + VPN) have
     /// several. The first is the primary/display one. Empty while a manual host resolves.
@@ -65,6 +80,13 @@ public final class ReceiverController {
     /// packet counters, timing, codec mode. Same 1 Hz tick; collected whether or not anyone
     /// is looking, so opening the dialog shows real history rather than starting from zero.
     public private(set) var diagnosticDetails: [String] = []
+    /// The details panel behind each peer row's "Peer details" action, keyed by
+    /// `PeerListEntry.id`: the peer's own name, addresses, how long it has been connected,
+    /// link health, what it is sending, and whether our microphone reaches it. Rebuilt in
+    /// the presentation half of the 1 Hz tick, like every other status string — the peer
+    /// ROWS deliberately keep their one-line summary, so opening a peer is what costs the
+    /// extra detail, exactly as the Diagnostics button does for the connection panel.
+    public private(set) var peerDetails: [String: [String]] = [:]
     /// Inputs the user can pick for microphone sending. Refreshed when the hardware set
     /// changes (route change / device list notifications), at start, and on send start —
     /// never on a timer; enumeration IPC alongside live playback causes audible glitches.
@@ -391,6 +413,13 @@ public final class ReceiverController {
     /// Mirrors the Windows receiver's hysteresis rule (MainForm.
     /// DetectAndAnnouncePeerHealthTransitions, upstream 2026-05-31) — see `updateCues`.
     private var peerConnectedState: [UInt32: Bool] = [:]
+    /// When each peer's connection last came up, for the details panel's "Connected for"
+    /// line. Driven by the same hysteretic transitions as the cues above rather than by the
+    /// raw health state, so a 2-second VPN stall does not restart the clock.
+    private var peerConnectedSince: [UInt32: Date] = [:]
+    /// The user's friendly names for peers, applied in `refreshPeerList`. Device-local and
+    /// shared by every profile — see `PeerNameBook`.
+    private var peerNames: PeerNameBook
     private var refreshTask: Task<Void, Never>?
     /// Whether a UI is currently on screen (battery finding 2). Defaults to false so a
     /// menu-bar macOS launch — window closed — does no presentation work until the window
@@ -444,6 +473,7 @@ public final class ReceiverController {
 
         manualPeers = settings.manualPeers
         selectedAddresses = settings.selectedPeerAddresses
+        peerNames = PeerNameBook(settings.peerNames)
         profiles = profileStore.profiles
         startupProfile = settings.startupProfile
         iCloudProfileSyncEnabled = settings.iCloudProfileSyncEnabled
@@ -693,6 +723,23 @@ public final class ReceiverController {
         refreshNow()
     }
 
+    /// Give a peer a name of the user's choosing; nil or blank clears it back to the name
+    /// the peer announces (upstream's Clear-custom-name button, and its empty-box
+    /// equivalent). The name is stored against the peer's identity, not its address, so it
+    /// survives the peer moving networks — and it is device-local and shared by every
+    /// profile, exactly like the Windows named-peers book, so applying a profile never
+    /// changes what a peer is called here.
+    public func renamePeer(_ entry: PeerListEntry, to name: String?) {
+        guard peerNames.set(name, for: entry.identityKey) else { return }
+        settings.peerNames = peerNames.storage
+        refreshNow()
+        if let resolved = peerNames.name(for: entry.identityKey) {
+            announce("Peer renamed to \(resolved)")
+        } else {
+            announce("Custom name cleared. This peer is now \(entry.machineName ?? entry.addressString)")
+        }
+    }
+
     // MARK: - Profiles
 
     /// Save the current configuration under `name`. A name matching an existing profile
@@ -907,6 +954,7 @@ public final class ReceiverController {
     private func refreshNow() {
         guard isRunning else {
             refreshPeerList()
+            if !peerDetails.isEmpty { peerDetails = [:] }
             if !connectionDetails.isEmpty { connectionDetails = [] }
             if !diagnosticDetails.isEmpty { diagnosticDetails = [] }
             if !trafficSummary.isEmpty { trafficSummary = "" }
@@ -943,6 +991,7 @@ public final class ReceiverController {
         updateSendStatus()
         updateSummary()
         updateConnectionDetails()
+        updatePeerDetails()
     }
 
     /// Battery (finding 1): the audio engine renders ~200×/s at the 5 ms low-latency IO
@@ -1382,9 +1431,11 @@ public final class ReceiverController {
             if isConnected && !wasConnected {
                 connected.append(key)
                 peerConnectedState[key] = true
+                peerConnectedSince[key] = Date()
             } else if isLost && wasConnected {
                 lost.append(key)
                 peerConnectedState[key] = false
+                peerConnectedSince.removeValue(forKey: key)
             } else if peerConnectedState[key] == nil {
                 // First sighting and neither clearly connected nor lost (address entered but
                 // no audio or pong yet) — seed quietly. If it later goes unreachable without
@@ -1398,6 +1449,7 @@ public final class ReceiverController {
         for (key, wasConnected) in peerConnectedState where !seen.contains(key) {
             if wasConnected { lost.append(key) }
             peerConnectedState.removeValue(forKey: key)
+            peerConnectedSince.removeValue(forKey: key)
         }
 
         if !connected.isEmpty { cues.play(.connect) }
@@ -1481,9 +1533,17 @@ public final class ReceiverController {
 
         for peer in discovery.currentPeers {
             let selected = peer.addressStrings.contains { selectedAddresses.contains($0) }
+            let machine = PeerNameBook.machineName(announced: peer.name, addressString: peer.addressString)
+            let key = PeerNameBook.identityKey(machineName: machine, fallback: peer.addressString)
+            let custom = peerNames.name(for: key)
             entries.append(PeerListEntry(
                 id: "d-\(peer.instanceId)", // instanceId, NOT address — stable across path changes
-                name: peer.name,
+                name: custom ?? peer.name,
+                machineName: machine,
+                customName: custom,
+                identityKey: key,
+                canSend: peer.canSend,
+                canReceive: peer.canReceive,
                 addressString: peer.addressString,
                 audioEndpoints: peer.audioEndpoints,
                 source: .discovered,
@@ -1495,10 +1555,20 @@ public final class ReceiverController {
 
         for peer in manualPeers {
             let resolved = manualResolved[peer.id] ?? []
+            // A peer added by address announces no machine name, so its identity — and the
+            // key its custom name hangs off — is the host the user typed, which is also the
+            // thing that persists across launches.
+            let key = PeerNameBook.identityKey(machineName: nil, fallback: peer.host)
+            let custom = peerNames.name(for: key)
             guard !resolved.isEmpty else {
                 entries.append(PeerListEntry(
                     id: "m-\(peer.id)",
-                    name: peer.displayName,
+                    name: custom ?? peer.displayName,
+                    machineName: nil,
+                    customName: custom,
+                    identityKey: key,
+                    canSend: nil,
+                    canReceive: nil,
                     addressString: peer.host,
                     audioEndpoints: [],
                     source: .manual,
@@ -1513,7 +1583,12 @@ public final class ReceiverController {
                 || resolved.contains { selectedAddresses.contains($0.addressString) }
             entries.append(PeerListEntry(
                 id: "m-\(peer.id)",
-                name: peer.displayName,
+                name: custom ?? peer.displayName,
+                machineName: nil,
+                customName: custom,
+                identityKey: key,
+                canSend: nil,
+                canReceive: nil,
                 addressString: resolved[0].addressString,
                 audioEndpoints: resolved,
                 source: .manual,
@@ -1557,6 +1632,135 @@ public final class ReceiverController {
         case .unknown, nil: break
         }
         return parts.joined(separator: ", ")
+    }
+
+    /// Rebuild the per-peer details panels. Cheap (a handful of peers, a few strings each)
+    /// and confined to the presentation half of the tick — nothing reads these while no UI
+    /// is on screen. The row summaries stay one line; this is the "open a peer to see
+    /// everything" layer, the same split the Diagnostics button makes for the connection.
+    private func updatePeerDetails() {
+        let health = heartbeat.allPeerHealth()
+        let now = Date()
+        var details: [String: [String]] = [:]
+        for entry in peers {
+            details[entry.id] = peerDetailLines(for: entry, health: health, now: now)
+        }
+        if details != peerDetails { peerDetails = details }
+    }
+
+    /// The details of one peer as plain sentences — the Windows "Peer details" box
+    /// (MainForm.BuildPeerDetailsText), adapted: the ASIO/WASAPI device breakdown has no
+    /// meaning here (one mixed output), and the encryption state, which the Windows box does
+    /// not carry, does — a password mismatch is the single most common reason a peer looks
+    /// connected and stays silent.
+    private func peerDetailLines(for entry: PeerListEntry, health: [PeerHealth], now: Date) -> [String] {
+        var lines: [String] = []
+        if let custom = entry.customName { lines.append("Name: \(custom)") }
+        lines.append("Machine name: \(entry.machineName ?? "not announced, this peer was added by address")")
+
+        if let primary = entry.audioEndpoint {
+            lines.append("Address: \(primary.addressString), port \(primary.port)")
+            // Multi-homed peers (LAN + Tailscale) are one row on purpose (pitfall 7); this is
+            // the one place the other paths are actually visible.
+            let others = entry.allAddressStrings.dropFirst()
+            if !others.isEmpty {
+                lines.append("Also reachable at: \(others.joined(separator: ", "))")
+            }
+        } else {
+            lines.append("Address: \(entry.addressString), still being looked up")
+        }
+        lines.append(entry.source == .manual ? "Added by address" : "Found by network discovery")
+        lines.append(entry.isSelected ? "Selected: yes, audio from this peer plays here"
+                                      : "Selected: no, audio from this peer is ignored")
+
+        if let key = entry.audioEndpoint?.address, peerConnectedState[key] == true,
+           let since = peerConnectedSince[key] {
+            lines.append("Connected for: \(Self.formatDuration(now.timeIntervalSince(since)))")
+        }
+
+        let best = bestHealth(for: entry.addresses, in: health)
+        switch best?.state {
+        case .healthy:
+            lines.append(best?.rttMs.map { "Link: healthy, round trip \($0) ms" } ?? "Link: healthy, round trip pending")
+        case .stale: lines.append("Link: unstable, replies have stopped for a moment")
+        case .unreachable: lines.append("Link: not responding")
+        case .unknown: lines.append("Link: waiting for the first reply")
+        case nil: lines.append("Link: not being checked, select this peer to connect to it")
+        }
+
+        lines.append("Sending: \(describeIncoming(from: entry))")
+
+        if !sendEnabled {
+            lines.append("Your microphone: not being sent, sending is off")
+        } else if !entry.isSelected {
+            lines.append("Your microphone: not sent to this peer, it is not selected")
+        } else if entry.canReceive == false {
+            lines.append("Your microphone: sent, but this peer has receiving turned off")
+        } else {
+            lines.append("Your microphone: being sent to this peer")
+        }
+
+        // Worst news first across the peer's paths, like the row summary.
+        let security = entry.addresses.map { engine.peerSecurityStatus(address: $0) }
+        if security.contains(.passwordMismatch) {
+            lines.append("Encryption: the password does not match this peer's")
+        } else if security.contains(.peerNeedsUpdate) {
+            lines.append("Encryption: this peer runs an older RemSound that cannot encrypt")
+        } else if security.contains(.secure) {
+            lines.append("Encryption: the password matches, the link is encrypted")
+        } else {
+            lines.append("Encryption: not known yet, it shows once this peer sends audio")
+        }
+
+        return lines
+    }
+
+    /// What this peer is sending us, in words: the live stream's codec and format when audio
+    /// is arriving, otherwise why there is nothing to describe.
+    private func describeIncoming(from entry: PeerListEntry) -> String {
+        let flowing = entry.addresses.first { engine.isAudioFlowing(from: $0, within: 3) }
+        if let flowing, let format = engine.activeFormat(from: flowing) {
+            let codec = format.codec == .opus ? "Opus" : "PCM"
+            let channels: String
+            switch format.channels {
+            case 1: channels = "mono"
+            case 2: channels = "stereo"
+            default: channels = "\(format.channels) channels"
+            }
+            let frame = format.frameDurationMs
+            let frameText = frame == frame.rounded() ? "\(Int(frame)) ms" : String(format: "%.1f ms", frame)
+            return "\(codec), \(format.sampleRate) Hz, \(channels), \(frameText) frames"
+        }
+        if !receiveEnabled { return "turn Receive audio on to see what this peer is sending" }
+        if entry.canSend == false { return "no, this peer has sending turned off" }
+        if !entry.isSelected { return "not known, select this peer to hear it" }
+        return "nothing is arriving right now"
+    }
+
+    /// One peer's details as pasteable text, self-describing like `connectionReport` — the
+    /// thing to paste into an issue when a peer connects but stays silent.
+    public func peerReport(for entry: PeerListEntry) -> String {
+        var lines = ["RemSound peer details", entry.name]
+        let stamp = DateFormatter()
+        stamp.dateStyle = .medium
+        stamp.timeStyle = .medium
+        lines.append(stamp.string(from: Date()))
+        lines.append("")
+        lines.append(contentsOf: peerDetails[entry.id] ?? [])
+        return lines.joined(separator: "\n")
+    }
+
+    /// Put `peerReport` on the system pasteboard. Announces on iOS for the same reason
+    /// `copyConnectionReport` does: a copy produces no other perceivable feedback.
+    public func copyPeerReport(for entry: PeerListEntry) {
+        let text = peerReport(for: entry)
+#if os(iOS)
+        UIPasteboard.general.string = text
+#elseif os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+#endif
+        announce("Peer details copied")
     }
 
     private func updateSummary() {

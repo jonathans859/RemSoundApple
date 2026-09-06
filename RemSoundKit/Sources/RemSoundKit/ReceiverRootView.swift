@@ -13,6 +13,16 @@ public struct ReceiverRootView: View {
     @FocusState private var profileNameFocused: Bool
     @State private var renamingProfileId: UUID?
     @State private var renameText = ""
+    /// Which peer's details sheet is open, and whether it opens focused on the name field
+    /// (the row's Rename action). ONE sheet at the top level rather than one per row: a
+    /// sheet or alert owned by a row misfires on macOS when the row disappears underneath it
+    /// — the same reason the profile rename alert lives on the tab, not on its row.
+    @State private var peerDetailsRequest: PeerDetailsRequest?
+
+    private struct PeerDetailsRequest: Identifiable {
+        let id: String
+        let focusName: Bool
+    }
 
     public init(controller: ReceiverController) {
         self.controller = controller
@@ -84,6 +94,10 @@ public struct ReceiverRootView: View {
             }
             .sheet(isPresented: $showingDiagnostics) {
                 DiagnosticsView(controller: controller)
+            }
+            .sheet(item: $peerDetailsRequest) { request in
+                PeerDetailsView(controller: controller, peerId: request.id,
+                                focusName: request.focusName)
             }
         }
 #if os(iOS)
@@ -365,7 +379,7 @@ public struct ReceiverRootView: View {
         } header: {
             Text("Peers")
         } footer: {
-            Text("Tick a peer to hear its audio. Audio plays only from peers you have selected.")
+            Text("Tick a peer to hear its audio. Audio plays only from peers you have selected. Each peer's actions — peer details, rename, and remove for peers you added — are on the row itself, in the VoiceOver rotor's Actions or the context menu.")
         }
     }
 
@@ -391,17 +405,34 @@ public struct ReceiverRootView: View {
         .accessibilityHint(peer.isSelected ? "Selected. Double tap to stop receiving from this peer."
                                            : "Not selected. Double tap to receive audio from this peer.")
 
+        // Details and rename are actions on the row itself — the address, the paths, the
+        // ping, what the peer is sending and its encryption state are one rotor action away
+        // instead of on every row's summary line.
+        let row = toggle
+            .accessibilityAction(named: "Peer details") {
+                peerDetailsRequest = PeerDetailsRequest(id: peer.id, focusName: false)
+            }
+            .accessibilityAction(named: "Rename peer") {
+                peerDetailsRequest = PeerDetailsRequest(id: peer.id, focusName: true)
+            }
+
         Group {
             if let manualId = peer.manualPeerId {
-                toggle
+                row
                     .accessibilityAction(named: "Remove peer") {
                         controller.removeManualPeer(id: manualId)
                     }
             } else {
-                toggle
+                row
             }
         }
         .contextMenu {
+            Button("Peer details") {
+                peerDetailsRequest = PeerDetailsRequest(id: peer.id, focusName: false)
+            }
+            Button("Rename peer") {
+                peerDetailsRequest = PeerDetailsRequest(id: peer.id, focusName: true)
+            }
             if let manualId = peer.manualPeerId {
                 Button("Remove peer", role: .destructive) {
                     controller.removeManualPeer(id: manualId)

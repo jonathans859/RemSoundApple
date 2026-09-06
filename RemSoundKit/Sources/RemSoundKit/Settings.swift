@@ -41,6 +41,20 @@ public final class ReceiverSettings {
         }
     }
 
+    /// Friendly peer names the user has typed, keyed by peer identity (see `PeerNameBook`).
+    /// Device-local and shared by every profile — the Windows named-peers book is likewise
+    /// machine-wide rather than part of a profile, so a rename never travels with a snapshot.
+    public var peerNames: [String: String] {
+        get {
+            guard let data = defaults.data(forKey: "peerNames"),
+                  let names = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+            return names
+        }
+        set {
+            defaults.set(try? JSONEncoder().encode(newValue), forKey: "peerNames")
+        }
+    }
+
     /// Addresses (dotted-quad strings) of peers the user has ticked. Discovered peers are
     /// re-identified across launches by address — the Windows side rerolls its discovery
     /// InstanceId every start, so the address is the only stable key.

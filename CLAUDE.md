@@ -128,6 +128,24 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   re-enter `start()` during startup. Every profile field (send included, now persisted)
   is covered by that rewrite; capture itself resumes via `startupSendPending` at the end
   of the first `start()`.
+- **Peer details and friendly names** (2026-09-06, Windows parity): every peer row carries
+  "Peer details" and "Rename peer" as explicit VoiceOver actions plus a context menu (pitfall
+  14 — no swipe actions), opening `PeerDetailsView` — machine name, the address and port,
+  every other path a multi-homed peer answers on, how long it has been connected, ping,
+  what it is sending (codec / rate / channels / frame), whether our microphone reaches it,
+  and the encryption state. The ROW keeps its one-line summary: a screen-reader user arrows
+  past every row every time they open the app, so the dozen live lines sit one action away —
+  the same split the Diagnostics button makes for the connection panel. Built as
+  `ReceiverController.peerDetails` (keyed by row id) in the **presentation** half of the 1 Hz
+  tick. "Connected for" hangs off the cue path's hysteretic state (`peerConnectedSince`), not
+  the raw health, so a 2 s VPN stall does not restart the clock. Names live in `PeerNameBook`
+  (`PeerNames.swift`) + `ReceiverSettings.peerNames`, keyed by the peer's **announced machine
+  name**, falling back to the address / typed host — that key is what makes a name outlive a
+  DHCP lease or a move from the LAN to Tailscale, and it is why renaming is not keyed by
+  address. Device-local and shared by every profile, exactly like the Windows named-peers
+  book: a rename is NOT part of a profile, does not sync, and applying a profile never
+  changes what a peer is called here. Blank name = clear, like upstream's Clear button.
+  Pinned by `PeerNamingTests`.
 - **Continuous latency auto-tune** (2026-08-17, opt-in, default off like upstream's):
   `LatencyAutoTune.swift` is a port of the Windows `MainForm.TickRoute` — every 5 s it
   recommends `secondHighest(arrival gap) + secondHighest(render-callback gap) + 5 ms`,
@@ -352,7 +370,9 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   which CI does not have; the real store silently no-ops when signed out, so tests against
   it would pass vacuously),
   `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a four-tab
-  `TabView`: **Connectivity** = status/peers/add-peer (its tab bar item exposes the live
+  `TabView`: **Connectivity** = status/peers/add-peer (peer rows carry details / rename /
+  remove as VoiceOver actions + context menu, opening `PeerDetailsView.swift`; its tab bar
+  item exposes the live
   traffic rates as its accessibility value, `controller.trafficSummary`; the Connection
   section shows ONLY general status — `controller.connectionDetails` — while the technical
   measurements live in `controller.diagnosticDetails` behind a Diagnostics button that opens
