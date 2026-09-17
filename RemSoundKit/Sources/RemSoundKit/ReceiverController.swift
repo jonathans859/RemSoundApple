@@ -407,16 +407,15 @@ public final class ReceiverController {
     private static let resolveRetryInterval: TimeInterval = 5
     private var lastResolveAttempt = Date.distantPast
     private var resolveInFlight = false
-    /// Addresses currently delivering audio — drives the "Receiving from N peers" summary.
-    private var audibleAddresses: Set<UInt32> = []
-    /// Connect/disconnect cue state per selected peer, keyed by the stable primary address.
-    /// Mirrors the Windows receiver's hysteresis rule (MainForm.
-    /// DetectAndAnnouncePeerHealthTransitions, upstream 2026-05-31) — see `updateCues`.
-    private var peerConnectedState: [UInt32: Bool] = [:]
-    /// When each peer's connection last came up, for the details panel's "Connected for"
-    /// line. Driven by the same hysteretic transitions as the cues above rather than by the
-    /// raw health state, so a 2-second VPN stall does not restart the clock.
-    private var peerConnectedSince: [UInt32: Date] = [:]
+    /// Keeps a selected peer's addresses in the allow-list for a while after discovery last
+    /// saw them, so a missed burst of announcements cannot close a live stream (issue #8).
+    private var allowGrace = SelectionGrace()
+    /// Peers currently delivering audio, by row id — drives the "Receiving from N peers"
+    /// summary.
+    private var audiblePeerIds: Set<String> = []
+    /// Connect/disconnect cue hysteresis, keyed by the peer's ROW ID rather than by any
+    /// address — see `PeerCueTracker`.
+    private var cueTracker = PeerCueTracker()
     /// The user's friendly names for peers, applied in `refreshPeerList`. Device-local and
     /// shared by every profile — see `PeerNameBook`.
     private var peerNames: PeerNameBook
@@ -634,8 +633,9 @@ public final class ReceiverController {
         output.stop()
         engine.stop()
         isRunning = false
-        audibleAddresses = []
-        peerConnectedState = [:] // cleared silently — the stop toggle is its own feedback
+        audiblePeerIds = []
+        allowGrace.reset()
+        cueTracker.reset() // cleared silently — the stop toggle is its own feedback
         statusSummary = "Stopped"
         connectionDetails = []
         trafficSummary = ""
@@ -900,34 +900,64 @@ public final class ReceiverController {
         resolveManualPeers()
     }
 
-    /// Push the current selection into the allow-list, heartbeat tracking, and discovery
-    /// unicast targets.
+    /// Push the current selection into the allow-list, heartbeat tracking, discovery unicast
+    /// targets, and the engine's address→peer grouping.
     private func applyPeerSelection() {
         var allowed: Set<UInt32> = []
         var tracked: [UDPEndpoint] = []
         var unicast: [UInt32] = []
+        var groups: [UInt32: String] = [:]
+        let now = Date()
 
         for peer in discovery.currentPeers {
             unicast.append(contentsOf: peer.addresses)
+            // Which addresses are the same machine — the engine needs this to tell one peer
+            // on two paths from two senders (issue #8). Keyed like `PeerListEntry.id`.
+            let identity = "d-\(peer.instanceId)"
+            for address in peer.addresses { groups[address] = identity }
             // Selected if ANY of its addresses is — and then allow/track ALL of them: the
             // sender picks its own route, so audio can arrive from any of the peer's paths.
             if peer.addressStrings.contains(where: { selectedAddresses.contains($0) }) {
                 allowed.formUnion(peer.addresses)
-                for endpoint in peer.audioEndpoints where !tracked.contains(endpoint) {
-                    tracked.append(endpoint)
+                let selectionKeys = Set(peer.addressStrings)
+                for endpoint in peer.audioEndpoints {
+                    if !tracked.contains(endpoint) { tracked.append(endpoint) }
+                    allowGrace.note(endpoint: endpoint, selectionKeys: selectionKeys,
+                                    identity: identity, now: now)
                 }
             }
         }
         for peer in manualPeers {
+            let manualIdentity = "m-\(peer.id)"
             for endpoint in manualResolved[peer.id] ?? [] {
                 unicast.append(endpoint.address)
+                // A manual row that discovery has already matched keeps the announced
+                // instance as its identity — same machine, one group.
+                let identity = groups[endpoint.address] ?? manualIdentity
+                groups[endpoint.address] = identity
                 if selectedAddresses.contains(endpoint.addressString) || selectedAddresses.contains(peer.host) {
                     allowed.insert(endpoint.address)
                     if !tracked.contains(endpoint) { tracked.append(endpoint) }
+                    allowGrace.note(endpoint: endpoint,
+                                    selectionKeys: [endpoint.addressString, peer.host],
+                                    identity: identity, now: now)
                 }
             }
         }
 
+        // A peer that is still streaming but whose announcements have gone quiet has just
+        // aged out of `discovery.currentPeers` above — and dropping it from the allow-list
+        // would close its live sessions. `SelectionGrace` holds its addresses eligible a
+        // while longer; it says why.
+        for grace in allowGrace.eligible(selected: selectedAddresses, now: now) {
+            allowed.insert(grace.endpoint.address)
+            if !tracked.contains(grace.endpoint) { tracked.append(grace.endpoint) }
+            // Keep announcing to it too: over a tunnel our unicast is how it finds us again.
+            if !unicast.contains(grace.endpoint.address) { unicast.append(grace.endpoint.address) }
+            if groups[grace.endpoint.address] == nil { groups[grace.endpoint.address] = grace.identity }
+        }
+
+        engine.setPeerAddressGroups(groups)
         engine.setAllowedSenders(allowed)
         heartbeat.setTrackedPeers(tracked)
         discovery.setUnicastPeerAddresses(unicast)
@@ -1408,63 +1438,34 @@ public final class ReceiverController {
         // slower gate for a real, total loss.
         let audioWindow: TimeInterval = 3
         let health = heartbeat.allPeerHealth()
-        var nowAudible: Set<UInt32> = []
-        var seen: Set<UInt32> = []
-        var connected: [UInt32] = []
-        var lost: [UInt32] = []
+        var nowAudible: Set<String> = []
+        var observations: [PeerCueTracker.Observation] = []
 
         for entry in peers {
-            guard entry.isSelected, let primary = entry.audioEndpoint else { continue }
-            // Keyed by the stable primary address even when audio arrives on another path,
-            // so a path switch doesn't fire a spurious disconnect+connect cue pair.
-            let key = primary.address
-            seen.insert(key)
+            guard entry.isSelected, !entry.addresses.isEmpty else { continue }
             let audioFlowing = entry.addresses.contains {
                 engine.isAudioFlowing(from: $0, within: audioWindow)
             }
-            if audioFlowing { nowAudible.insert(key) }
-
+            // Identified by the row id — the announced instance for a discovered peer, the
+            // entry for a manual one — never by an address, which moves under a multi-homed
+            // peer when one of its paths ages out of discovery (issue #8).
+            if audioFlowing { nowAudible.insert(entry.id) }
             let state = bestHealth(for: entry.addresses, in: health)?.state ?? .unknown
-            let isConnected = audioFlowing || state == .healthy
-            let isLost = !audioFlowing && state == .unreachable
-            let wasConnected = peerConnectedState[key] ?? false
-            if isConnected && !wasConnected {
-                connected.append(key)
-                peerConnectedState[key] = true
-                peerConnectedSince[key] = Date()
-            } else if isLost && wasConnected {
-                lost.append(key)
-                peerConnectedState[key] = false
-                peerConnectedSince.removeValue(forKey: key)
-            } else if peerConnectedState[key] == nil {
-                // First sighting and neither clearly connected nor lost (address entered but
-                // no audio or pong yet) — seed quietly. If it later goes unreachable without
-                // ever connecting, that is a connect-FAILED event and stays silent too.
-                peerConnectedState[key] = false
-            }
+            observations.append(PeerCueTracker.Observation(
+                id: entry.id,
+                name: entry.name,
+                isConnected: audioFlowing || state == .healthy,
+                isLost: !audioFlowing && state == .unreachable))
         }
 
-        // Peers that vanished from tracking entirely (deselected or expired): a disconnect
-        // cue only if they were connected when last seen — one that never connected stays quiet.
-        for (key, wasConnected) in peerConnectedState where !seen.contains(key) {
-            if wasConnected { lost.append(key) }
-            peerConnectedState.removeValue(forKey: key)
-            peerConnectedSince.removeValue(forKey: key)
-        }
-
-        if !connected.isEmpty { cues.play(.connect) }
-        if !lost.isEmpty { cues.play(.disconnect) }
+        let transitions = cueTracker.update(observations)
+        if !transitions.connected.isEmpty { cues.play(.connect) }
+        if !transitions.lost.isEmpty { cues.play(.disconnect) }
         // "Connected"/"lost", not "receiving audio" — with the heartbeat leg of the rule, a
         // peer can be connected before (or without) sending any audio.
-        for address in connected { announce("Connected to \(name(for: address))") }
-        for address in lost { announce("Connection to \(name(for: address)) lost") }
-        audibleAddresses = nowAudible
-    }
-
-    private func name(for address: UInt32) -> String {
-        let addressString = UDPEndpoint(address: address, port: 0).addressString
-        return peers.first { $0.addresses.contains(address) || $0.addressString == addressString }?.name
-            ?? addressString
+        for peerName in transitions.connected { announce("Connected to \(peerName)") }
+        for peerName in transitions.lost { announce("Connection to \(peerName) lost") }
+        audiblePeerIds = nowAudible
     }
 
     /// Best heartbeat result across a peer's addresses: healthiest state first, then lowest
@@ -1673,8 +1674,7 @@ public final class ReceiverController {
         lines.append(entry.isSelected ? "Selected: yes, audio from this peer plays here"
                                       : "Selected: no, audio from this peer is ignored")
 
-        if let key = entry.audioEndpoint?.address, peerConnectedState[key] == true,
-           let since = peerConnectedSince[key] {
+        if let since = cueTracker.connectedSince(id: entry.id) {
             lines.append("Connected for: \(Self.formatDuration(now.timeIntervalSince(since)))")
         }
 
@@ -1771,7 +1771,7 @@ public final class ReceiverController {
             // Sending and peer connections keep working — say so instead of "Stopped".
             summary = "Receiving is off — peers stay connected"
         } else {
-            let receivingCount = audibleAddresses.count
+            let receivingCount = audiblePeerIds.count
             if receivingCount > 0 {
                 let buffer = mixer.currentBufferMs
                 summary = "Receiving from \(receivingCount) peer\(receivingCount == 1 ? "" : "s") — buffer \(buffer) ms"

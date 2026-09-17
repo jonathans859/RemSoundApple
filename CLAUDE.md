@@ -70,8 +70,18 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   Watch-only upstream today — when the relay flips `--require-addr-check`, a client that never
   echoes has all forwarded traffic withheld. Pinned by `AddrCheckTests`.
 - **Allow-list**: gate audio/format by source **IP**, not port. Sessions keyed
-  (endpoint, streamId); on a new streamId from the same peer, supersede old sessions
-  **only if the lane matches** (BothIndependent senders run two lanes per peer).
+  (endpoint, streamId), but superseded by **peer identity** + lane, not by endpoint equality
+  (issue #8): one new session drops every other session of the same peer on the same lane,
+  which covers a streamId rotation, a new source port on the same path, and a path handover
+  in one rule. Lane-mismatched sessions still coexist (BothIndependent senders run two lanes
+  per peer). The engine learns which addresses are one machine from
+  `setPeerAddressGroups`, pushed by `ReceiverController.applyPeerSelection`; an address that
+  is not in that map stands alone, which is the pre-#8 behaviour. On top of that, a peer
+  already delivering a lane **keeps** it: another path of the same peer only opens a session
+  once the active one has been silent for `pathHandoverSilence` (1 s). Without that, a sender
+  aimed at both a multi-homed receiver's LAN and VPN addresses gets its audio decoded twice
+  and summed against itself at two path delays — comb filtering that sounds like a bad link,
+  not like an echo. Pinned by `MultiPathTests`.
 
 ## Locked product decisions (do not revisit)
 
@@ -260,9 +270,20 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 6. iOS clamps `installTap` buffers to ~100 ms regardless of the requested size. Low-latency
    capture must use `AVAudioSinkNode` → lock-free ring → drain thread (as implemented).
 7. Multi-homed peers (LAN + Tailscale) announce from several source IPs. Never key row
-   identity, allow-list, or heartbeat tracking on a single address —
-   `PeerAnnouncement.addresses` keeps all paths; selection/allow/track must cover ALL
-   (`PeerDiscoveryTests` pins this).
+   identity, allow-list, heartbeat tracking, **or connect/disconnect cue state** on a single
+   address — `PeerAnnouncement.addresses` keeps all paths; selection/allow/track must cover
+   ALL (`PeerDiscoveryTests` pins this). "Primary address" is not stable either: it is
+   `addresses[0]`, i.e. whichever path discovery saw first and has not expired, so a quiet
+   LAN leg ageing out under a live VPN stream moves it. Cue state therefore hangs off the
+   **row id** (`PeerCueTracker`, issue #8) — while it was keyed on the address, a path change
+   fired "lost" for the old key and "connected" for the new one on the same tick, announcing
+   both while audio never stopped. For the same reason **discovery liveness must never gate playback**: the
+   allow-list is re-derived from `discovery.currentPeers` on every discovery change and every
+   DNS retry, and `setAllowedSenders` closes every live session that falls out of it, so a
+   selected peer's addresses stay eligible for 30 s past their last sighting
+   (`SelectionGrace`) — intersected with the current selection, so deselecting still cuts
+   instantly. Over a VPN only unicast announcements carry and missing six in a row past the
+   8 s expiry is unremarkable.
 8. Jitter-buffer click-trim must keep a cushion ABOVE target latency, never trim to bare
    target (causes sustained underruns on bursty VPN paths) — see `SessionPlayout.write`.
 9. iOS suspends a locked/backgrounded app whose audio session is `.mixWithOthers` (and
@@ -352,6 +373,9 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   thread, 10 ms units; mono duplicated to both channels) → `AudioSendEngine.swift`
   (accumulate → Opus encode → encrypt → targets; format re-announce every 250 ms) via
   `OpusStreamEncoder.swift` (`RemOpusShim` C target wraps variadic `opus_encoder_ctl`).
+- Multi-path policy (issue #8), pure and CI-testable, both driven from `ReceiverController`:
+  `PeerCueTracker.swift` (hysteretic connect/lost cues keyed by row id) and
+  `SelectionGrace.swift` (allow-list eligibility past discovery's own expiry).
 - App layer: `ReceiverController.swift` (@MainActor façade, 1 Hz refresh tick; the apps and
   the Shortcuts actions share ONE instance via `ReceiverController.shared`),
   `RemoteTransportControls.swift` (headset / lock-screen play-pause → `receiveEnabled`),

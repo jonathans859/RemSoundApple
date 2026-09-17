@@ -9,6 +9,11 @@ import os
 public final class AudioReceiverEngine {
     public static let sessionIdleTimeout: TimeInterval = 4
     public static let maxLiveSessions = 32
+    /// How long a path of a multi-homed peer must go silent before another path of the SAME
+    /// peer may take its lane over (issue #8). Long enough that ordinary jitter never hands
+    /// the lane back and forth, far shorter than `sessionIdleTimeout`, so a genuine path
+    /// failover costs about a second rather than four.
+    public static let pathHandoverSilence: TimeInterval = 1
 
     private let lock = NSLock()
     private var sessions: [SessionKey: StreamSession] = [:]
@@ -37,6 +42,18 @@ public final class AudioReceiverEngine {
     private var allowedSenderAddresses: Set<UInt32>?
 
     private var peerSecurity: [UInt32: PeerSecurityStatus] = [:]
+
+    /// Address → peer identity, pushed by the app from discovery (issue #8). Without it the
+    /// engine has no way to tell "the same machine on its LAN and its VPN address" from "two
+    /// different senders", and a sender aimed at both addresses of one receiver gets its
+    /// audio decoded twice and summed against itself at two path delays — comb filtering that
+    /// sounds like a bad link rather than like an echo. Addresses absent from the map fall
+    /// back to standing alone, which is exactly the old behaviour.
+    private var peerIdentityByAddress: [UInt32: String] = [:]
+    /// Paths currently refused because another path of the same peer is carrying the lane.
+    /// Only here to keep the diagnostic from repeating four times a second — the sender
+    /// re-announces its format every 250 ms.
+    private var suppressedDuplicatePaths: Set<SessionKey> = []
 
     public private(set) var bytesReceived: Int64 = 0
     public private(set) var bytesSent: Int64 = 0
@@ -89,6 +106,7 @@ public final class AudioReceiverEngine {
         if changed && !enabled {
             closed = Array(sessions.values)
             sessions.removeAll()
+            suppressedDuplicatePaths.removeAll()
         }
         lock.unlock()
         guard changed else { return }
@@ -108,6 +126,7 @@ public final class AudioReceiverEngine {
                 toClose.append(session)
                 sessions.removeValue(forKey: key)
             }
+            suppressedDuplicatePaths = suppressedDuplicatePaths.filter { addresses.contains($0.endpoint.address) }
         }
         lock.unlock()
         for session in toClose {
@@ -115,6 +134,21 @@ public final class AudioReceiverEngine {
             onDiagnostic?("session closed (sender no longer selected): \(session.endpoint) stream=\(session.streamId)")
         }
         if !toClose.isEmpty { onSessionsChanged?() }
+    }
+
+    /// Tell the engine which addresses belong to the same peer (issue #8). The app derives
+    /// this from discovery — one identity per announced instance, and one per manual peer —
+    /// and pushes it alongside the allow-list. Addresses not in the map each stand alone.
+    public func setPeerAddressGroups(_ groups: [UInt32: String]) {
+        lock.lock()
+        peerIdentityByAddress = groups
+        lock.unlock()
+    }
+
+    /// Who this address belongs to. The address itself is the fallback identity, so an
+    /// unmapped address is only ever grouped with itself.
+    private func peerIdentityLocked(_ address: UInt32) -> String {
+        peerIdentityByAddress[address] ?? "addr-\(address)"
     }
 
     public func peerSecurityStatus(address: UInt32) -> PeerSecurityStatus {
@@ -197,6 +231,7 @@ public final class AudioReceiverEngine {
         startDate = nil
         lock.lock()
         sessions.removeAll()
+        suppressedDuplicatePaths.removeAll()
         lock.unlock()
         mixer.removeAllSessions()
     }
@@ -275,6 +310,31 @@ public final class AudioReceiverEngine {
             return // same session; nothing to do
         }
 
+        // Issue #8: one peer, one lane, two paths. A sender aimed at both a multi-homed
+        // receiver's LAN and VPN addresses delivers the same audio twice from two different
+        // source addresses; opening a session for each sums the stream against itself at two
+        // path delays. The path that is already delivering keeps the lane; another path of
+        // the same peer only takes over once that one has been silent for
+        // `pathHandoverSilence`, so a genuine failover still works and a duplicate never
+        // plays. Per lane, because BothIndependent really does send two concurrent lanes.
+        let identity = peerIdentityLocked(remote.address)
+        let handoverCutoff = Date().addingTimeInterval(-Self.pathHandoverSilence)
+        let livePath = sessions.first {
+            $0.key.endpoint.address != remote.address
+                && peerIdentityLocked($0.key.endpoint.address) == identity
+                && $0.value.format.lane == format.lane
+                && $0.value.lastWriteTime >= handoverCutoff
+        }
+        if let livePath {
+            let firstRefusal = suppressedDuplicatePaths.insert(key).inserted
+            lock.unlock()
+            if firstRefusal {
+                onDiagnostic?("duplicate path ignored: \(remote) stream=\(streamId) — same peer already delivering from \(livePath.key.endpoint)")
+            }
+            return
+        }
+        suppressedDuplicatePaths.remove(key)
+
         let playout = mixer.getOrCreateSession(endpoint: remote, streamId: streamId)
         let isNew = sessions[key] == nil
         if isNew { sessionsOpenedCount &+= 1 }
@@ -282,13 +342,15 @@ public final class AudioReceiverEngine {
             endpoint: remote, streamId: streamId, format: format, playout: playout,
             decryptor: decryptor, diagnostics: diagnostics)
 
-        // Same-lane streamId rotation: the sender rerolls streamId on codec changes and
-        // engine restarts; drop superseded sessions from this peer that share the lane so
-        // they don't sit idle racking up phantom underruns. Lane-mismatched sessions coexist
-        // (BothIndependent mode sends two concurrent lanes per peer).
+        // Supersede the peer's other sessions on this lane: a streamId rotation (the sender
+        // rerolls it on codec changes and engine restarts), a new source port on the same
+        // path, or the silent path this one has just taken over from. Matched on peer
+        // identity, not endpoint equality, so all three collapse into one rule; lane-mismatched
+        // sessions coexist (BothIndependent mode sends two concurrent lanes per peer).
         var superseded: [StreamSession] = []
         for (otherKey, other) in sessions
-        where otherKey.endpoint == remote && otherKey.streamId != streamId && other.format.lane == format.lane {
+        where otherKey != key && peerIdentityLocked(otherKey.endpoint.address) == identity
+            && other.format.lane == format.lane {
             superseded.append(other)
             sessions.removeValue(forKey: otherKey)
         }
@@ -296,7 +358,7 @@ public final class AudioReceiverEngine {
 
         for old in superseded {
             mixer.removeSession(endpoint: old.endpoint, streamId: old.streamId)
-            onDiagnostic?("session superseded (streamId rotated): \(old.endpoint) old=\(old.streamId) new=\(streamId)")
+            onDiagnostic?("session superseded: \(old.endpoint) old=\(old.streamId) → \(remote) new=\(streamId)")
         }
         if isNew {
             onDiagnostic?("session opened: \(remote) stream=\(streamId) \(format.displayDescription)")
@@ -348,5 +410,30 @@ public final class AudioReceiverEngine {
             onDiagnostic?("session pruned (idle): \(session.endpoint) stream=\(session.streamId)")
         }
         if !removed.isEmpty { onSessionsChanged?() }
+    }
+
+    // MARK: - Test seams
+
+    /// Internal test seam: feed a packet as though the socket had delivered it from `remote`.
+    /// The multi-path rules in `handleFormat` need two DIFFERENT source addresses, which no
+    /// loopback test can produce (unlike the AddrCheck echo, which has to go over a real
+    /// socket), so this is the only way to reach them.
+    func handlePacketForTesting(_ packet: [UInt8], from remote: UDPEndpoint) {
+        handleRawPacket(buffer: packet, length: packet.count, remote: remote, kernelArrivalNs: 0)
+    }
+
+    /// Internal test seam: the live session table.
+    struct LiveSession: Equatable {
+        let endpoint: UDPEndpoint
+        let streamId: UInt16
+        let lane: RenderRoute
+    }
+
+    var liveSessionsForTesting: [LiveSession] {
+        lock.lock()
+        defer { lock.unlock() }
+        return sessions.map {
+            LiveSession(endpoint: $0.key.endpoint, streamId: $0.key.streamId, lane: $0.value.format.lane)
+        }
     }
 }
