@@ -28,6 +28,11 @@ final class CoreAudioInputUnit {
     /// caller can build its converter, exactly like `inputNode.outputFormat(forBus: 0)`.
     let sampleRate: Double
     let channelCount: Int
+    /// The bound device's own input latency in milliseconds — presentation latency plus the
+    /// HAL's safety offset plus one IO buffer, which together are how long a sample waits
+    /// before our render callback sees it. 0 when the device does not answer. Read once,
+    /// here, because this is audio-server IPC (pitfall 5).
+    let inputLatencyMs: Double
 
     /// Called on the realtime render thread with deinterleaved float planes. Set before
     /// `start()`; the render path may only copy and signal (no locks, no allocation).
@@ -94,6 +99,7 @@ final class CoreAudioInputUnit {
         sampleRate = configured.rate
         channelCount = configured.channels
         maxFrames = configured.maxFrames
+        inputLatencyMs = Self.deviceInputLatencyMs(device: resolvedDevice, sampleRate: configured.rate)
 
         bufferList = AudioBufferList.allocate(maximumBuffers: channelCount)
         for channel in 0..<channelCount {
@@ -177,6 +183,25 @@ final class CoreAudioInputUnit {
             &slice, UInt32(MemoryLayout<UInt32>.size)), "set the capture slice size")
 
         return (hardwareFormat.mSampleRate, Int(hardwareFormat.mChannelsPerFrame), slice)
+    }
+
+    /// Sum of the device's input-side latency figures, in milliseconds. Every one of them is
+    /// optional as far as the HAL is concerned, so a device that answers none reports 0 and
+    /// the peer keeps its own estimate — the same contract the Windows sender has.
+    private static func deviceInputLatencyMs(device: AudioDeviceID, sampleRate: Double) -> Double {
+        guard sampleRate > 0 else { return 0 }
+        func frames(_ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope) -> UInt32 {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+            var value: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value)
+            return status == noErr ? value : 0
+        }
+        let total = frames(kAudioDevicePropertyLatency, scope: kAudioObjectPropertyScopeInput)
+            + frames(kAudioDevicePropertySafetyOffset, scope: kAudioObjectPropertyScopeInput)
+            + frames(kAudioDevicePropertyBufferFrameSize, scope: kAudioObjectPropertyScopeGlobal)
+        return Double(total) * 1000 / sampleRate
     }
 
     deinit {

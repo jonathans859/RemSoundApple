@@ -181,7 +181,7 @@ public struct ReceiverRootView: View {
         } header: {
             Text("Saved profiles")
         } footer: {
-            Text("Applying a profile replaces the peer list and selection, password, receive and send switches, microphone, and maximum delay. Volume and the other audio options are not touched. The profile your current settings match is marked as currently applied; changing any of its settings removes the mark.")
+            Text("Applying a profile replaces the peer list and selection, password, receive and send switches, microphone and its quality, and maximum delay. Volume and the other audio options are not touched. The profile your current settings match is marked as currently applied; changing any of its settings removes the mark.")
         }
     }
 
@@ -238,6 +238,9 @@ public struct ReceiverRootView: View {
         var parts: [String] = []
         parts.append("receive \(profile.receiveEnabled ? "on" : "off")")
         parts.append("send \(profile.sendEnabled ? "on" : "off")")
+        // Only the expensive choice is worth a word here — every profile that says nothing
+        // sends Opus, and the row is read out in full every time the list is arrowed past.
+        if profile.sendCodec == .pcm { parts.append("sending uncompressed PCM") }
         let peerCount = profile.manualPeers.count
         if peerCount > 0 {
             parts.append("\(peerCount) saved peer\(peerCount == 1 ? "" : "s")")
@@ -263,7 +266,7 @@ public struct ReceiverRootView: View {
         } header: {
             Text("Save current configuration")
         } footer: {
-            Text("Saves the peers, password, receive and send switches, microphone, and maximum delay as they are right now. Using an existing profile's name updates that profile.")
+            Text("Saves the peers, password, receive and send switches, microphone and its quality, and maximum delay as they are right now. Using an existing profile's name updates that profile.")
         }
     }
 
@@ -547,6 +550,8 @@ public struct ReceiverRootView: View {
 
             MicrophonePicker(controller: controller)
 
+            SendCodecPicker(controller: controller)
+
             if !controller.sendStatus.isEmpty {
                 Text(controller.sendStatus)
                     .font(.callout)
@@ -555,7 +560,7 @@ public struct ReceiverRootView: View {
         } header: {
             Text("Send")
         } footer: {
-            Text("Audio goes to the peers you have ticked on the Connectivity tab; they must also allow this device in their RemSound app. Using Bluetooth headphones' microphone lowers their playback quality while sending.")
+            Text("Audio goes to the peers you have ticked on the Connectivity tab; they must also allow this device in their RemSound app. Using Bluetooth headphones' microphone lowers their playback quality while sending. Opus sends about 24 kilobytes a second to each peer; uncompressed PCM sends about 290, roughly a gigabyte an hour, so it suits a local network rather than mobile data.")
         }
     }
 
@@ -598,6 +603,21 @@ private struct VolumeBoostPicker: View {
         }
         .pickerStyle(.menu)
         .accessibilityHint("Makes a quiet sender louder. The limiter keeps peaks from clipping, but a large boost on already-loud audio will distort.")
+    }
+}
+
+/// Opus or raw PCM for our own microphone stream (the Windows sender offers the same
+/// choice). Two named cases rather than `CaseIterable`, so the recommended one is read first.
+private struct SendCodecPicker: View {
+    @Bindable var controller: ReceiverController
+
+    var body: some View {
+        Picker("Microphone quality", selection: $controller.sendCodec) {
+            Text("Opus — compressed, recommended").tag(AudioTransportCodec.opus)
+            Text("PCM — uncompressed, much more data").tag(AudioTransportCodec.pcm)
+        }
+        .pickerStyle(.menu)
+        .accessibilityHint("Opus sends about 24 kilobytes a second to each peer. PCM sends about 290 kilobytes a second, with slightly less delay and no compression.")
     }
 }
 

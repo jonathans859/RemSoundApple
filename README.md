@@ -10,7 +10,7 @@ with low-latency playback and the same end-to-end encryption as the Windows app.
 
 It speaks the RemSound v3.x wire protocol (header version 1) and current formats only.
 Besides receiving, it can **send a microphone or input device** back to your RemSound peers
-(Opus, encrypted). Recording and legacy/v2.x compatibility are out of scope.
+(Opus or uncompressed PCM, encrypted). Recording and legacy/v2.x compatibility are out of scope.
 
 ## Features
 
@@ -35,8 +35,10 @@ Besides receiving, it can **send a microphone or input device** back to your Rem
 * **Microphone sending** — stream a mic (iPhone: bottom mic, AirPods, wired headsets;
   Mac: any input device, including virtual devices like Loopback for system audio) to the
   peers you've selected, encrypted with the same shared password. Opus 48 kHz stereo at
-  192 kbps, the same encoder settings as the Windows sender. The toggle resets to off on
-  every launch — the microphone is never live just because the app started. Note: while
+  192 kbps by default, the same encoder settings as the Windows sender; uncompressed 24-bit
+  PCM is a per-profile choice for a local network, at about 290 kB/s per peer instead of 24.
+  Sending is remembered across launches, like receiving, and a saved profile applies exactly
+  as it was saved. Note: while
   sending from Bluetooth headphones' own mic, their playback quality drops to the
   bidirectional link — that's a Bluetooth limitation, not an app bug.
 

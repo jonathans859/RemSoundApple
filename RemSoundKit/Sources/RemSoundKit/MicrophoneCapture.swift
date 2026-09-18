@@ -49,6 +49,14 @@ public final class MicrophoneCapture {
 
     public private(set) var isRunning = false
 
+    /// How long audio waits in the capture device before the first callback hands it to us,
+    /// as the device itself reports it — 0 while nothing is open, or when the device will
+    /// not say. Read once per capture graph (at `start`, and again on each rebuild), never
+    /// polled: asking the audio server for it on a timer is exactly the IPC that crackles
+    /// (pitfall 5). The send engine announces it in the format packet so the peer can report
+    /// the real journey instead of guessing at this stage.
+    public private(set) var reportedInputLatencyMs: Double = 0
+
 #if os(iOS)
     private var engine: AVAudioEngine?
     private var sinkNode: AVAudioSinkNode?
@@ -272,6 +280,14 @@ public final class MicrophoneCapture {
 #endif
         ringBuffer = ring
         drainSemaphore = wakeups
+#if os(iOS)
+        // The session reports the input hardware's own latency; the IO buffer is the wait
+        // before a full callback exists. Both are the capture stage the peer cannot see.
+        let session = AVAudioSession.sharedInstance()
+        reportedInputLatencyMs = (session.inputLatency + session.ioBufferDuration) * 1000
+#else
+        reportedInputLatencyMs = unit.inputLatencyMs
+#endif
         isRunning = true
 
         stateLock.lock()
@@ -341,6 +357,7 @@ public final class MicrophoneCapture {
         convertedBuffer = nil
         hardwareInputBuffer = nil
         ringBuffer = nil
+        reportedInputLatencyMs = 0
         isRunning = false
         onDiagnostic?("microphone capture stopped")
     }

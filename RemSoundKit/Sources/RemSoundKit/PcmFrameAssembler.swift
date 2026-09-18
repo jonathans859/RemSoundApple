@@ -62,9 +62,37 @@ public final class PcmFrameAssembler {
     }
 }
 
-/// Packed signed 24-bit little-endian PCM → float conversion (the PCM wire format).
-/// Mirrors `RemSound.Core.PcmPack.Int24LEToFloat`.
+/// Float ↔ packed signed 24-bit little-endian PCM (the PCM wire format).
+/// Mirrors `RemSound.Core.PcmPack`.
 public enum PcmPack {
+    /// Pack floats in [-1, +1] into signed 24-bit little-endian, 3 bytes per sample.
+    /// `destination` must hold at least `source.count * 3` bytes; it is written in place so
+    /// the send path can reuse one scratch buffer per frame.
+    ///
+    /// Scaling and truncation match the Windows sender exactly (clamp, × (2^23 - 1),
+    /// truncate toward zero) — the same bytes must come out of both implementations for a
+    /// given frame, because a receiver cannot tell which one sent it.
+    public static func floatToInt24LE(_ source: UnsafePointer<Float>, count: Int, into destination: inout [UInt8]) {
+        let needed = count * 3
+        if destination.count < needed {
+            destination = [UInt8](repeating: 0, count: needed)
+        }
+        destination.withUnsafeMutableBufferPointer { dst in
+            var j = 0
+            for i in 0..<count {
+                // NaN would trap the Int32 conversion — a crash in the capture thread over
+                // one bad sample. Treat it as silence, the way the C# cast does.
+                let value = source[i]
+                let clamped = value.isNaN ? 0 : min(max(value, -1), 1)
+                let sample = Int32(clamped * 8_388_607)
+                dst[j] = UInt8(truncatingIfNeeded: sample)
+                dst[j + 1] = UInt8(truncatingIfNeeded: sample >> 8)
+                dst[j + 2] = UInt8(truncatingIfNeeded: sample >> 16)
+                j += 3
+            }
+        }
+    }
+
     public static func int24LEToFloat(_ source: ArraySlice<UInt8>, into destination: inout [Float]) {
         let src = Array(source)
         let sampleCount = src.count / 3

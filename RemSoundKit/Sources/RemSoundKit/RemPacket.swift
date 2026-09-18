@@ -41,6 +41,12 @@ public enum RemPacket {
     public static let formatPayloadExtendedSize = 36
     /// Extended payload + 8-byte password fingerprint (2026-05-31+ senders).
     public static let formatPayloadWithFingerprintSize = 44
+    /// Fingerprinted payload + the sender's own capture latency as a uint16 of 0.1 ms ticks
+    /// (upstream 2026-08-24). It sits AFTER the fingerprint, so only a payload that carries
+    /// one can carry it. Every reader takes a minimum length, so a peer that has never heard
+    /// of the field just ignores the tail.
+    public static let formatPayloadWithCaptureSize = 46
+    public static let captureLatencyTicksPerMs = 10.0
     public static let passwordFingerprintSize = 8
     /// 1 byte HeartbeatKind + 8 bytes originator-monotonic timestamp (ms).
     public static let heartbeatPayloadSize = 9
@@ -48,6 +54,9 @@ public enum RemPacket {
     public static let defaultPort: UInt16 = 47830
     public static let magic: UInt32 = 0x444E_4D52 // 'RMND' little-endian
     public static let version: UInt8 = 1
+    /// Largest audio body we put in one datagram (header excluded) — the Windows sender's
+    /// `MaxAudioPayloadBytes`. A PCM frame bigger than this is split into parts.
+    public static let maxAudioPayloadBytes = 1454
 
     // MARK: - Header
 
@@ -119,9 +128,18 @@ public enum RemPacket {
     }
 
     /// Writes a Format payload, mirroring the Windows `RemPacket.WriteFormatPayload`:
-    /// eight little-endian int32 fields, the Lane byte + 3 reserved-zero bytes, and (when a
-    /// fingerprint is supplied) the 8-byte password fingerprint — 36 or 44 bytes total.
-    public static func writeFormatPayload(_ format: AudioFormatInfo, passwordFingerprint: [UInt8]?) -> Data {
+    /// eight little-endian int32 fields, the Lane byte + 3 reserved-zero bytes, (when a
+    /// fingerprint is supplied) the 8-byte password fingerprint, and after it our own
+    /// capture latency — 36, 44 or 46 bytes total.
+    ///
+    /// `captureLatencyMs` is how long audio waits in OUR capture device before it reaches
+    /// this packet, as the device itself reports it. It travels with the format so the peer
+    /// can show the real journey instead of substituting its own fixed guess for a stage
+    /// that happens here; 0 (nothing open, or the device would not say) is the "no figure"
+    /// value on both sides.
+    public static func writeFormatPayload(
+        _ format: AudioFormatInfo, passwordFingerprint: [UInt8]?, captureLatencyMs: Double = 0
+    ) -> Data {
         var data = Data(capacity: formatPayloadWithFingerprintSize)
         data.appendLE(UInt32(bitPattern: Int32(format.sampleRate)))
         data.appendLE(UInt32(bitPattern: Int32(format.channels)))
@@ -135,6 +153,9 @@ public enum RemPacket {
         data.append(contentsOf: [0, 0, 0]) // reserved
         if let passwordFingerprint, passwordFingerprint.count == passwordFingerprintSize {
             data.append(contentsOf: passwordFingerprint)
+            let ticks = (captureLatencyMs * captureLatencyTicksPerMs).rounded()
+            let clamped = ticks.isFinite ? max(0, min(Double(UInt16.max), ticks)) : 0
+            data.appendLE(UInt16(clamped))
         }
         return data
     }
@@ -166,6 +187,14 @@ public enum RemPacket {
 ///     uint8  totalParts
 public enum RemPcmFrame {
     public static let subHeaderSize = 6
+
+    public static func writeSubHeader(frameId: UInt32, partIndex: UInt8, totalParts: UInt8) -> Data {
+        var data = Data(capacity: subHeaderSize)
+        data.appendLE(frameId)
+        data.append(partIndex)
+        data.append(totalParts)
+        return data
+    }
 
     public static func readSubHeader(_ source: ArraySlice<UInt8>) -> (frameId: UInt32, partIndex: UInt8, totalParts: UInt8)? {
         let p = Array(source)

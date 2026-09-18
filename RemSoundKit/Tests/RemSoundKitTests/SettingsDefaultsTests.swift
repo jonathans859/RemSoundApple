@@ -44,4 +44,18 @@ final class SettingsDefaultsTests: XCTestCase {
         // keeps mixing, instead of being silently pushed onto the exclusive session.
         XCTAssertFalse(reloaded.exclusiveAudio)
     }
+
+    /// The send codec is stored as the wire raw value, and 0 (absent key) is not one of
+    /// them — it must read as Opus, never as "whatever case happens to be first".
+    func testSendCodecDefaultsToOpusAndRoundTrips() {
+        let settings = ReceiverSettings(defaults: defaults)
+        XCTAssertEqual(settings.sendCodec, .opus)
+
+        settings.sendCodec = .pcm
+        XCTAssertEqual(ReceiverSettings(defaults: defaults).sendCodec, .pcm)
+
+        // A value from a future build is not a licence to put 288 kB/s on a mobile link.
+        defaults.set(99, forKey: "sendCodec")
+        XCTAssertEqual(ReceiverSettings(defaults: defaults).sendCodec, .opus)
+    }
 }
