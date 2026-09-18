@@ -39,8 +39,12 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   streamId (0 coerces to 1), uint32 sequence. One UDP port **47830** for audio + heartbeat;
   discovery on **47821**.
 - **Format payload**: accept 32 / 36 (+lane byte @32) / 44 (+8-byte password fingerprint @36)
-  bytes. Field @28 is `frameSamplesPerChannel` — a **sample count, not milliseconds**.
-  Unknown lane values clamp to `.mixed`, never reject.
+  / 46 (+uint16 sender capture latency in 0.1 ms ticks @44, upstream 2026-08-24) bytes — every
+  reader takes a MINIMUM length, which is what makes growing it safe. Field @28 is
+  `frameSamplesPerChannel` — a **sample count, not milliseconds**. Unknown lane values clamp
+  to `.mixed`, never reject. We WRITE 46 whenever we have a fingerprint (0 ticks = nothing
+  open / the device would not say, which is the "no figure" value on both sides); we do not
+  read the field back yet — there is no receive-side journey display to spend it on.
 - **Crypto**: PBKDF2-HMAC-SHA256, **100 000** iterations, salts `"RemSound.v1.audio-key"`
   (32-byte key) / `"RemSound.v1.fingerprint"` (8 bytes). AES-256-GCM packet layout is
   **`nonce(12) ‖ tag(16) ‖ ciphertext`** — CryptoKit's `combined` is nonce‖ct‖tag, do NOT
@@ -55,6 +59,11 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   reads the nonce off the packet) and cheaper than a CSPRNG draw per packet.
 - **PCM**: whole int24-LE frame encrypted, then split into ≤1454-byte parts with a 6-byte
   sub-header → reassemble **then** decrypt; parts arrive in order, missing part = drop frame.
+  Sending PCM uses **120 samples/channel (2.5 ms)**, upstream's "Tight" size and the only one
+  whose encrypted frame (720 + 28 bytes) still fits ONE datagram: a PCM frame is all-or-nothing
+  on the receiver, so upstream's 5 ms default would double what a single lost packet costs.
+  Each part carries its own audio sequence; `frameId` increments per frame. Format fields for
+  PCM are 48000 / 2 / 24-bit / encoding 1 / blockAlign 6 / 288000 B/s.
 - **Opus**: per-packet decrypt → libopus decode; on a single-packet gap decode the next
   packet with `decode_fec=1` first. Frame-size floor 120 samples.
 - **Discovery JSON**: PascalCase keys, matched **case-sensitively** by Windows
@@ -87,8 +96,8 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 
 - v3.x protocol only; no legacy, no relay-v2 lobby, no recording.
 - Profiles (2026-07-12, user reversed the earlier "no profiles" decision): local named
-  snapshots of peers + selection, password, receive/send toggles, microphone, max delay,
-  auto-tune on/off (2026-08-17) —
+  snapshots of peers + selection, password, receive/send toggles, microphone, send codec
+  (2026-09-18), max delay, auto-tune on/off (2026-08-17) —
   **`ReceiverProfile.init(from:)` is hand-written and every field after `id`/`name` decodes
   with a default — keep it that way when adding fields.** Both read paths (`ProfileStore.profiles`
   and `ProfileSync.readRemote`) decode with `try?` and treat a throw as "no profiles", so a
@@ -222,8 +231,15 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   (`ReceiverController.appendTransportDiagnostics`) — that line is what identified this,
   and it stays as long as the feature depends on guessing what an accessory sends.
   Untestable in CI and on the dev machine: verify on real hardware.
-- Mic send: Opus-only, one mixed lane, 48 kHz stereo 192 kbps (RESTRICTED_LOWDELAY,
-  complexity 10, VBR, FEC, 10 % loss bias) — mirrors the Windows sender. One endpoint per
+- Mic send: one mixed lane, 48 kHz stereo, **Opus by default** — 192 kbps, RESTRICTED_LOWDELAY,
+  complexity 10, VBR, FEC, 10 % loss bias, 10 ms frames — mirroring the Windows sender.
+  **PCM is a user choice** (`ReceiverSettings.sendCodec`, issue #7, 2026-09-18, in profiles,
+  default Opus): 24-bit 2.5 ms frames, ~288 kB/s per peer against Opus's ~24, so the picker
+  and its footer state the cost where the choice is made. It buys the encoder stage and the
+  10 ms frame back, not audible quality — capture is mono duplicated to both channels and
+  Opus at 192 kbps is already transparent for a microphone. Changing codec mid-stream rotates
+  the streamId (`AudioSendEngine.setCodec`), like upstream's `OnCodecChanged`: a receiver keys
+  a session on (endpoint, streamId) + the format it opened with. One endpoint per
   selected peer (two paths of one machine would double its sessions). Outbound audio uses
   the receiver's socket. The send toggle IS persisted like the receive toggle — the old
   "never persist send / mic never goes hot at launch" rule was retired by the user
@@ -371,7 +387,8 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   visible would fold a whole backgrounded session into one "last minute" figure.
 - Send path: `MicrophoneCapture.swift` (sink node → `CaptureRingBuffer.swift` → drain
   thread, 10 ms units; mono duplicated to both channels) → `AudioSendEngine.swift`
-  (accumulate → Opus encode → encrypt → targets; format re-announce every 250 ms) via
+  (accumulate → Opus encode or int24-LE pack → encrypt → split if over one datagram →
+  targets; format re-announce every 250 ms) via
   `OpusStreamEncoder.swift` (`RemOpusShim` C target wraps variadic `opus_encoder_ctl`).
 - Multi-path policy (issue #8), pure and CI-testable, both driven from `ReceiverController`:
   `PeerCueTracker.swift` (hysteretic connect/lost cues keyed by row id) and
@@ -425,5 +442,4 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 
 Known v1 simplifications (intentional): linear resampler for non-48k PCM senders, no drift
 resampler (upstream v3.9.1 also added buffer-depth feedback to theirs — port both together
-if drift ever becomes audible), no PCM send, no macOS loopback capture (virtual input
-devices cover it).
+if drift ever becomes audible), no macOS loopback capture (virtual input devices cover it).

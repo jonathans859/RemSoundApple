@@ -143,6 +143,19 @@ public final class ReceiverController {
         }
     }
 
+    /// Which codec the microphone stream uses — Opus (default, ~24 kB/s per peer) or raw
+    /// PCM (~288 kB/s per peer). Persisted and part of a profile. Changing it while sending
+    /// rotates the outbound stream identity inside the engine, so the peer opens a fresh
+    /// session on the new format instead of format-changing the live one.
+    public var sendCodec: AudioTransportCodec = .opus {
+        didSet {
+            guard sendCodec != oldValue else { return }
+            settings.sendCodec = sendCodec
+            sendEngine.setCodec(sendCodec)
+            refreshNow()
+        }
+    }
+
     /// Playback of received audio — the Windows "Receive audio" checkbox. Gates ONLY
     /// playback: the socket, heartbeats, and discovery stay up regardless (single-port
     /// model — see the Windows AudioReceiver's SetPlaybackEnabled), so sending and peer
@@ -483,6 +496,7 @@ public final class ReceiverController {
         targetLatencyMs = settings.targetLatencyMs
         cuesEnabled = settings.cuesEnabled
         autoTuneLatencyEnabled = settings.autoTuneLatencyEnabled
+        sendCodec = settings.sendCodec
         password = settings.password
         exclusiveAudio = settings.exclusiveAudio
         headsetTransportControls = settings.headsetTransportControls
@@ -548,6 +562,8 @@ public final class ReceiverController {
         microphone.onSamples = { [sendEngine] samples, frames in
             sendEngine.submit(samples, frameCount: frames)
         }
+        // didSet does not fire for the init assignment, so hand the engine the loaded codec.
+        sendEngine.setCodec(sendCodec)
         // Refresh the picker's input list only when the hardware set actually changes —
         // NOT on the 1 Hz tick. Polling AVAudioSession / the Core Audio HAL every second
         // does audio-server IPC alongside live playback and audibly glitched it.
@@ -826,6 +842,9 @@ public final class ReceiverController {
         autoTuneLatencyEnabled = profile.autoTuneLatencyEnabled
         targetLatencyMs = profile.targetLatencyMs
         selectedMicrophoneId = profile.selectedMicrophoneId
+        // Before the send switch below: the codec must be in place when capture starts, or
+        // the first quarter-second of the stream announces the previous one.
+        sendCodec = profile.sendCodec
         password = profileStore.password(forProfile: profile.id)
         receiveEnabled = profile.receiveEnabled
         // Send last: it may start the capture pipeline (microphone permission prompt
@@ -857,7 +876,8 @@ public final class ReceiverController {
             sendEnabled: sendEnabled,
             selectedMicrophoneId: selectedMicrophoneId,
             targetLatencyMs: targetLatencyMs,
-            autoTuneLatencyEnabled: autoTuneLatencyEnabled)
+            autoTuneLatencyEnabled: autoTuneLatencyEnabled,
+            sendCodec: sendCodec)
     }
 
     private func resolveManualPeers() {
@@ -1067,6 +1087,9 @@ public final class ReceiverController {
         updateSendTargets()
         do {
             try microphone.start()
+            // So the FIRST format packet already carries it; the tick below keeps it in step
+            // with a capture graph the mic rebuilt under us (route change, device swap).
+            sendEngine.setCaptureLatencyMs(microphone.reportedInputLatencyMs)
             announce("Microphone sending started")
         } catch {
             sendEngine.stop()
@@ -1083,6 +1106,7 @@ public final class ReceiverController {
         let wasCapturing = microphone.isRunning
         microphone.stop()
         sendEngine.stop()
+        sendEngine.setCaptureLatencyMs(0) // nothing open: the "no figure" value on both sides
 #if os(iOS)
         output.setRecordingMode(false)
 #endif
@@ -1098,6 +1122,10 @@ public final class ReceiverController {
             sendTargetCount = 0
             return
         }
+        // A cached value the capture graph wrote at build time — a plain property read, NOT
+        // hardware polling (pitfall 5). Pushed here because MicrophoneCapture rebuilds itself
+        // on a route or device change, and the figure we announce must follow it.
+        sendEngine.setCaptureLatencyMs(microphone.reportedInputLatencyMs)
         let health = heartbeat.allPeerHealth()
         var targets: [UDPEndpoint] = []
         for entry in peers where entry.isSelected && !entry.audioEndpoints.isEmpty {
@@ -1125,7 +1153,7 @@ public final class ReceiverController {
         } else if sendTargetCount == 0 {
             text = "No peers selected — tick a peer above to send to it"
         } else {
-            var status = "Sending microphone audio to \(sendTargetCount) peer\(sendTargetCount == 1 ? "" : "s")"
+            var status = "Sending microphone audio to \(sendTargetCount) peer\(sendTargetCount == 1 ? "" : "s") as \(sendCodec.displayName)"
             // Capture cadence diagnostic: ~5 ms = smooth packet pacing; ~100 ms would
             // mean burst sending is back (the receiving side would need a huge buffer).
             // Plain atomic read, NOT hardware polling (CLAUDE.md pitfall 6).
@@ -1697,7 +1725,7 @@ public final class ReceiverController {
         } else if entry.canReceive == false {
             lines.append("Your microphone: sent, but this peer has receiving turned off")
         } else {
-            lines.append("Your microphone: being sent to this peer")
+            lines.append("Your microphone: being sent to this peer as \(sendCodec.displayName)")
         }
 
         // Worst news first across the peer's paths, like the row summary.

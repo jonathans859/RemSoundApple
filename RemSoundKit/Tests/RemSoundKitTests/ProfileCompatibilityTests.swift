@@ -73,6 +73,10 @@ final class ProfileCompatibilityTests: XCTestCase {
         XCTAssertEqual(profile.sendEnabled, false)
         XCTAssertEqual(profile.manualPeers, [])
         XCTAssertEqual(profile.selectedPeerAddresses, [])
+        // A profile saved before the codec choice existed sent Opus, and a profile that
+        // silently started putting 288 kB/s on a phone's link would be the worst possible
+        // default to inherit.
+        XCTAssertEqual(profile.sendCodec, .opus)
     }
 
     func testAutoTuneFlagRoundTripsThroughTheEncodedJson() throws {
@@ -82,6 +86,44 @@ final class ProfileCompatibilityTests: XCTestCase {
             targetLatencyMs: 30, autoTuneLatencyEnabled: true)
         let data = try JSONEncoder().encode(profile)
         XCTAssertEqual(try JSONDecoder().decode(ReceiverProfile.self, from: data), profile)
+    }
+
+    func testSendCodecRoundTripsThroughTheEncodedJson() throws {
+        let profile = ReceiverProfile(
+            name: "Studio", manualPeers: [], selectedPeerAddresses: [],
+            receiveEnabled: true, sendEnabled: true, selectedMicrophoneId: nil,
+            targetLatencyMs: 30, autoTuneLatencyEnabled: false, sendCodec: .pcm)
+        let data = try JSONEncoder().encode(profile)
+        XCTAssertEqual(try JSONDecoder().decode(ReceiverProfile.self, from: data), profile)
+    }
+
+    func testLegacyProfileGainsTheSendCodecWithoutLosingAnything() {
+        defaults.set(Data(Self.legacyJson.utf8), forKey: "profiles")
+        let store = ProfileStore(defaults: defaults)
+        var profiles = store.profiles
+        XCTAssertEqual(profiles.first?.sendCodec, .opus)
+        profiles[0].sendCodec = .pcm
+        store.profiles = profiles
+
+        let reloaded = ProfileStore(defaults: defaults).profiles
+        XCTAssertEqual(reloaded.first?.sendCodec, .pcm)
+        XCTAssertEqual(reloaded.first?.targetLatencyMs, 60, "unrelated fields must be preserved")
+    }
+
+    func testStartupProfileAppliesTheSendCodec() {
+        let settings = ReceiverSettings(defaults: defaults)
+        let store = ProfileStore(defaults: defaults)
+        let profile = ReceiverProfile(
+            name: "Studio", manualPeers: [], selectedPeerAddresses: [],
+            receiveEnabled: true, sendEnabled: true, selectedMicrophoneId: nil,
+            targetLatencyMs: 45, autoTuneLatencyEnabled: false, sendCodec: .pcm)
+        store.profiles = [profile]
+        settings.startupProfile = .fixed(profile.id)
+        XCTAssertEqual(settings.sendCodec, .opus)
+
+        store.applyStartupProfile(to: settings)
+
+        XCTAssertEqual(settings.sendCodec, .pcm)
     }
 
     func testStartupProfileAppliesTheAutoTuneFlag() {

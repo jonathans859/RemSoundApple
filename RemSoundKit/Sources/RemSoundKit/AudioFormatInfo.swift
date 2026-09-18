@@ -1,8 +1,20 @@
 import Foundation
 
-public enum AudioTransportCodec: Int, Sendable {
+/// How audio is carried on the wire. Also the user-facing choice for our own microphone
+/// stream (`ReceiverSettings.sendCodec`), which is why it is `Codable` — it is stored in
+/// profiles by raw value, and those raw values are the wire's, so they can never be renumbered.
+public enum AudioTransportCodec: Int, Sendable, Codable, Hashable {
     case pcm = 1
     case opus = 2
+
+    /// Short name for status lines and pickers — spoken, so no abbreviation beyond the
+    /// codec's own name.
+    public var displayName: String {
+        switch self {
+        case .pcm: return "PCM"
+        case .opus: return "Opus"
+        }
+    }
 }
 
 /// Which render lane a stream is tagged for. The Windows sender's BothIndependent mode emits

@@ -2,8 +2,8 @@ import Foundation
 
 /// A named snapshot of the connection-relevant configuration — a lightweight take on the
 /// Windows client's profiles. Deliberately covers only what changes between setups: the
-/// remembered peers, which of them are enabled, the receive/send toggles, the microphone,
-/// and the maximum delay. The profile's password belongs to the snapshot too, but lives in
+/// remembered peers, which of them are enabled, the receive/send toggles, the microphone and
+/// the codec its audio goes out as, and the maximum delay. The profile's password belongs to the snapshot too, but lives in
 /// the Keychain (one item per profile id, see `ProfileStore`) — never in this Codable
 /// struct, which is persisted as plain JSON.
 public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
@@ -15,6 +15,10 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
     public var sendEnabled: Bool
     /// Stable input id; nil = system default (matches `ReceiverSettings.selectedMicrophoneId`).
     public var selectedMicrophoneId: String?
+    /// Which codec the microphone stream uses. Part of the snapshot because it belongs to
+    /// the send path the profile already carries: a LAN setup can afford PCM where the one
+    /// saved for a phone on mobile data cannot.
+    public var sendCodec: AudioTransportCodec
     public var targetLatencyMs: Int
     /// Whether the delay is retuned continuously (see `LatencyAutoTune`). Part of the
     /// snapshot because it changes the meaning of `targetLatencyMs`: with it on, the stored
@@ -24,7 +28,8 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
     public init(id: UUID = UUID(), name: String, manualPeers: [ManualPeer],
                 selectedPeerAddresses: [String], receiveEnabled: Bool, sendEnabled: Bool,
                 selectedMicrophoneId: String?, targetLatencyMs: Int,
-                autoTuneLatencyEnabled: Bool = false) {
+                autoTuneLatencyEnabled: Bool = false,
+                sendCodec: AudioTransportCodec = .opus) {
         self.id = id
         self.name = name
         self.manualPeers = manualPeers
@@ -34,11 +39,12 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
         self.selectedMicrophoneId = selectedMicrophoneId
         self.targetLatencyMs = targetLatencyMs
         self.autoTuneLatencyEnabled = autoTuneLatencyEnabled
+        self.sendCodec = sendCodec
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, manualPeers, selectedPeerAddresses, receiveEnabled, sendEnabled
-        case selectedMicrophoneId, targetLatencyMs, autoTuneLatencyEnabled
+        case selectedMicrophoneId, targetLatencyMs, autoTuneLatencyEnabled, sendCodec
     }
 
     /// Hand-written so a field added later cannot destroy the user's profiles. Both decode
@@ -58,6 +64,7 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
         targetLatencyMs = try container.decodeIfPresent(Int.self, forKey: .targetLatencyMs)
             ?? ReceiverSettings.defaultTargetLatencyMs
         autoTuneLatencyEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoTuneLatencyEnabled) ?? false
+        sendCodec = try container.decodeIfPresent(AudioTransportCodec.self, forKey: .sendCodec) ?? .opus
     }
 }
 
@@ -209,6 +216,7 @@ public final class ProfileStore {
         settings.selectedMicrophoneId = profile.selectedMicrophoneId
         settings.targetLatencyMs = profile.targetLatencyMs
         settings.autoTuneLatencyEnabled = profile.autoTuneLatencyEnabled
+        settings.sendCodec = profile.sendCodec
         settings.password = password(forProfile: profileId)
         settings.lastAppliedProfileId = profileId
     }

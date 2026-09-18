@@ -111,6 +111,16 @@ public final class ReceiverSettings {
         set { defaults.set(newValue, forKey: "sendEnabled") }
     }
 
+    /// Which codec the microphone stream uses (Windows parity — its sender offers the same
+    /// choice). Default **Opus**: it is a twelfth of the data for audio that is effectively
+    /// transparent for a microphone source, and on a phone the data and radio cost of PCM is
+    /// real. Stored as the wire raw value, and an unknown one reads back as Opus rather than
+    /// silently putting 288 kB/s on a cellular link.
+    public var sendCodec: AudioTransportCodec {
+        get { AudioTransportCodec(rawValue: defaults.integer(forKey: "sendCodec")) ?? .opus }
+        set { defaults.set(newValue.rawValue, forKey: "sendCodec") }
+    }
+
     /// Continuously retune the playout target to what the link currently needs, instead of
     /// holding whatever the delay control was last set to. Default **off**, mirroring the
     /// Windows receiver's default for the same feature — it moves a value the user chose, so

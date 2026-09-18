@@ -70,6 +70,9 @@ final class RemPacketTests: XCTestCase {
         if size >= RemPacket.formatPayloadWithFingerprintSize {
             payload += [1, 2, 3, 4, 5, 6, 7, 8]
         }
+        if size >= RemPacket.formatPayloadWithCaptureSize {
+            payload += [123, 0] // sender capture latency, 0.1 ms ticks = 12.3 ms
+        }
         return payload
     }
 
@@ -93,6 +96,18 @@ final class RemPacketTests: XCTestCase {
     func testFormatPayloadWithFingerprint44Bytes() {
         let result = RemPacket.readFormat(makeFormatPayload(size: 44)[...])
         XCTAssertEqual(result?.format.lane, .wasapiLane)
+        XCTAssertEqual(result?.passwordFingerprint, [1, 2, 3, 4, 5, 6, 7, 8])
+    }
+
+    /// Upstream sends 46 bytes since 2026-08-24 (capture latency after the fingerprint).
+    /// We do not read that field, but every field before it must still arrive — a reader that
+    /// length-matched instead of taking a minimum would drop every format packet from a
+    /// current Windows sender, i.e. never open a session at all.
+    func testFormatPayloadWithCaptureLatency46Bytes() {
+        let result = RemPacket.readFormat(makeFormatPayload(size: 46)[...])
+        XCTAssertNotNil(result)
+        XCTAssertEqual(result?.format.lane, .wasapiLane)
+        XCTAssertEqual(result?.format.frameSamplesPerChannel, 480)
         XCTAssertEqual(result?.passwordFingerprint, [1, 2, 3, 4, 5, 6, 7, 8])
     }
 
