@@ -185,6 +185,36 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   re-enter `start()` during startup. Every profile field (send included, now persisted)
   is covered by that rewrite; capture itself resumes via `startupSendPending` at the end
   of the first `start()`.
+- **Servers (relay groups)** (2026-10-02, upstream server-v2.9 parity): a server is **somewhere
+  you go, not a peer you add** — one "Connect to server" button on Connectivity opens
+  `ServerConnectView` (address, the ones used before, leave), and the people on it get their
+  own list right under the ordinary one. One server at a time; connecting elsewhere leaves
+  the first. Persisted (`serverHost` / `serverConnected` / `recentServers`) and re-entered at
+  launch, like the receive and send toggles; carried in profiles (`ReceiverProfile.serverHost`,
+  nil = not on one) and applied by both paths — `applyProfile` and the launch rewrite.
+  A **tick is stored against the member's client id** (`server-member-<hex>` in
+  `selectedPeerAddresses`), never an address, which is what makes it outlive their restart and
+  ours; the hello's tick list is derived from that same selection, so one untick clears both
+  halves and they cannot disagree. A new password is a new group, so the password didSet drops
+  those keys — and `applyProfile` sets `applyingProfile` to stop that eating the ticks it has
+  just restored. `relayClientId` is device-local: never in a profile, never in iCloud (two
+  devices sharing one id would be ONE person to every server).
+  **Everybody on the server shares ONE outgoing datagram** — `updateSendTargets` collapses
+  every server row to the server endpoint, because the server makes the copies; a copy per
+  person would also have it fan out each of them. Heartbeats go to the server for as long as
+  we are there, ticked partner or not: the ordinary one claims the pair slot.
+  The server's ordinary **pair partner appears as a person** and is ticked like one (it cannot
+  say it has ticked us, so holding the slot beside us stands for it), keyed by the server's own
+  address so a user who had already added the server as a peer sees one row with one tick, not
+  the same thing twice. An address typed into add-a-peer that answers an address check is a
+  server — the app offers to go there as one (`serverSuggestion`).
+  Why the server list is empty always has a reason on screen (no password to be grouped by, no
+  member list yet, nobody else on your password), and a member who has not ticked us back says
+  so rather than going quiet — that is the only thing a person cannot work out alone.
+  NOT done yet, and upstream's hard-won advice if it is: "Accept connections from other peers"
+  (ask each time / automatically / manual) and its companion rule that a **deliberate untick
+  must stick for the run** — with auto-accept on, unticking somebody who still has us ticked
+  lets their audio back in, which re-ticks them, and the user cannot let anyone go.
 - **Peer details and friendly names** (2026-09-06, Windows parity): every peer row carries
   "Peer details" and "Rename peer" as explicit VoiceOver actions plus a context menu (pitfall
   14 — no swipe actions), opening `PeerDetailsView` — machine name, the address and port,
@@ -431,6 +461,12 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 - Multi-path policy (issue #8), pure and CI-testable, both driven from `ReceiverController`:
   `PeerCueTracker.swift` (hysteretic connect/lost cues keyed by row id) and
   `SelectionGrace.swift` (allow-list eligibility past discovery's own expiry).
+- Server groups: `RelayGroupProtocol.swift` (the version-2 framing, hello / roster / full /
+  bye, `RelayClientId`) and `RelayGroupClient.swift` (the state machine — hello cadence,
+  member list, stand-in addresses, the inbound/outbound routing rules, the 5 s safety rail).
+  The engine has exactly one hook each way: `dispatch` on the way in, `sendFromAudioSocket`
+  on the way out (`sendRawFromAudioSocket` is the unrouted one the client's own packets and
+  the address-check echo use).
 - App layer: `ReceiverController.swift` (@MainActor façade, 1 Hz refresh tick; the apps and
   the Shortcuts actions share ONE instance via `ReceiverController.shared`),
   `RemoteTransportControls.swift` (headset / lock-screen play-pause → `receiveEnabled`),
@@ -449,7 +485,8 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   which CI does not have; the real store silently no-ops when signed out, so tests against
   it would pass vacuously),
   `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a four-tab
-  `TabView`: **Connectivity** = status/peers/add-peer (peer rows carry details / rename /
+  `TabView`: **Connectivity** = status / server / peers / peers-on-the-server / add-peer
+  (the server button opens `ServerConnectView.swift`; peer rows carry details / rename /
   remove as VoiceOver actions + context menu, opening `PeerDetailsView.swift`; its tab bar
   item exposes the live
   traffic rates as its accessibility value, `controller.trafficSummary`; the Connection
