@@ -480,6 +480,16 @@ final class RelayGroupClientTests: XCTestCase {
         }
         XCTAssertEqual(sends, 1)
 
+        // The server itself is a tracked peer too (its ordinary heartbeat is what claims the
+        // pair slot), so the SAME ping arrives here a third time. Still one group copy — but
+        // the ordinary one must go, because that is the one with a job to do.
+        var versions: [UInt8] = []
+        _ = client.route(ping, to: server, send: { packet, _ in
+            versions.append(packet[4])
+            return true
+        })
+        XCTAssertEqual(versions, [1], "the ordinary copy only; the group already has one")
+
         // The next ping has its own sequence and does go out.
         _ = client.route(ordinaryPacket(type: .heartbeat, sequence: 43, payload: [0]),
                          to: endpoints[0], send: { _, _ in

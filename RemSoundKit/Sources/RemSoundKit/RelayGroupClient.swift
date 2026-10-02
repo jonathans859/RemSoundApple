@@ -20,6 +20,31 @@ public enum RelayGroupEvent: Sendable {
     /// A hello was due but we have no password, so there is no group to join.
     case needsPassword
 
+    /// What to say out loud, for the few of these a person actually needs to hear. nil for
+    /// the rest, which only reach the Diagnostics panel — a screen-reader user arrowing
+    /// through the app does not want a sentence every time somebody's name changes.
+    public var announcement: String? {
+        switch self {
+        case .joined(let others):
+            return others == 0
+                ? "Joined the group on the server. Nobody else here is using your password yet."
+                : "Joined the group on the server with \(others) other\(others == 1 ? "" : "s")."
+        case .memberTickedUs(let name):
+            return "\(name) has ticked you."
+        case .memberUntickedUs(let name):
+            return "\(name) has unticked you."
+        case .wentCold:
+            return "The server has stopped answering. Its people are no longer listed."
+        case .serverFull(let count, let maximum):
+            return "The server is full, \(count) of \(maximum). You cannot join its group."
+        case .needsPassword:
+            return "Set a password to join a group. A server puts everyone on the same password together."
+        case .connecting, .left, .memberJoined, .memberLeft, .memberRenamed,
+             .pairedWithOrdinaryChanged:
+            return nil
+        }
+    }
+
     public var message: String {
         switch self {
         case .connecting(let server):
@@ -487,15 +512,21 @@ public final class RelayGroupClient {
         let via = self.server
         let forMember = memberIdByAddress[destination.address] != nil
         let alsoOrdinary = pairedWithOrdinary && pairPartnerTicked
-        var suppressDuplicateHeartbeat = false
-        if forMember, isHeartbeat {
-            suppressDuplicateHeartbeat = lastWrappedHeartbeatSequence == sequence
+        // One ping is addressed to every tracked peer, and while we are on a server that
+        // means every member AND the server itself — all the same datagram. Wrapping it once
+        // per destination would put N identical copies on the server, each of which it fans
+        // out to the whole group, each of which every member then pongs. One ping, one
+        // group-framed copy; the ordinary copy below is a different packet with a different
+        // job and is not affected.
+        var suppressDuplicateWrap = false
+        if isHeartbeat, joined {
+            suppressDuplicateWrap = lastWrappedHeartbeatSequence == sequence
             lastWrappedHeartbeatSequence = sequence
         }
         lock.unlock()
 
         if forMember || Self.isMemberAddress(destination.address) {
-            guard let server = via, joined, forMember, !suppressDuplicateHeartbeat,
+            guard let server = via, joined, forMember, !suppressDuplicateWrap,
                   let wrapped = RelayGroup.wrap(packet, clientId: clientId)
             else {
                 // A member we no longer know, or a group that has gone cold: dropped. A
@@ -512,7 +543,7 @@ public final class RelayGroupClient {
         // whichever framing it arrives in — but it is proof of *this address*, which is a v1
         // fact. Echo it exactly as it came.
         if typeByte == RemPacketType.addrCheck.rawValue { return false }
-        if let wrapped = RelayGroup.wrap(packet, clientId: clientId) {
+        if !suppressDuplicateWrap, let wrapped = RelayGroup.wrap(packet, clientId: clientId) {
             _ = send(wrapped, server)
         }
         if isHeartbeat || alsoOrdinary {

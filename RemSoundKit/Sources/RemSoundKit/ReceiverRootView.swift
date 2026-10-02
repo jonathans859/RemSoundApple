@@ -9,6 +9,7 @@ public struct ReceiverRootView: View {
     @FocusState private var addPeerFocused: Bool
     @State private var showingAbout = false
     @State private var showingDiagnostics = false
+    @State private var showingServer = false
     @State private var newProfileName = ""
     @FocusState private var profileNameFocused: Bool
     @State private var renamingProfileId: UUID?
@@ -95,6 +96,9 @@ public struct ReceiverRootView: View {
             .sheet(isPresented: $showingDiagnostics) {
                 DiagnosticsView(controller: controller)
             }
+            .sheet(isPresented: $showingServer) {
+                ServerConnectView(controller: controller)
+            }
             .sheet(item: $peerDetailsRequest) { request in
                 PeerDetailsView(controller: controller, peerId: request.id,
                                 focusName: request.focusName)
@@ -114,7 +118,9 @@ public struct ReceiverRootView: View {
         Form {
             statusSection
             connectionSection
+            serverSection
             peersSection
+            serverPeersSection
             addPeerSection
         }
         .formStyle(.grouped)
@@ -181,7 +187,7 @@ public struct ReceiverRootView: View {
         } header: {
             Text("Saved profiles")
         } footer: {
-            Text("Applying a profile replaces the peer list and selection, password, receive and send switches, microphone and its quality, and maximum delay. Volume and the other audio options are not touched. The profile your current settings match is marked as currently applied; changing any of its settings removes the mark.")
+            Text("Applying a profile replaces the peer list and selection, the server you are on, password, receive and send switches, microphone and its quality, and maximum delay. Volume and the other audio options are not touched. The profile your current settings match is marked as currently applied; changing any of its settings removes the mark.")
         }
     }
 
@@ -245,6 +251,9 @@ public struct ReceiverRootView: View {
         if peerCount > 0 {
             parts.append("\(peerCount) saved peer\(peerCount == 1 ? "" : "s")")
         }
+        if let server = profile.serverHost, !server.isEmpty {
+            parts.append("on the server at \(server)")
+        }
         // With auto-tune on the stored delay is only where the tuner starts, so say so
         // rather than promising a value the profile will not hold to.
         parts.append(profile.autoTuneLatencyEnabled
@@ -266,7 +275,7 @@ public struct ReceiverRootView: View {
         } header: {
             Text("Save current configuration")
         } footer: {
-            Text("Saves the peers, password, receive and send switches, microphone and its quality, and maximum delay as they are right now. Using an existing profile's name updates that profile.")
+            Text("Saves the peers, the server you are on, password, receive and send switches, microphone and its quality, and maximum delay as they are right now. Using an existing profile's name updates that profile.")
         }
     }
 
@@ -370,20 +379,102 @@ public struct ReceiverRootView: View {
         }
     }
 
+    /// A server is somewhere you go, so it sits above the peer lists rather than in one.
+    /// While connected, the button changes to match what it now does — upstream's wording,
+    /// because "connect" on a button that leaves is what made people hesitate to press it.
+    private var serverSection: some View {
+        Section {
+            Button(controller.isConnectedToServer ? "Disconnect from or change server"
+                                                  : "Connect to server") {
+                showingServer = true
+            }
+            .accessibilityHint(controller.isConnectedToServer
+                ? "Opens the server screen, where you can leave this server or go to another one"
+                : "A server lets you reach people you cannot reach directly. Everyone on it using your password becomes one group.")
+
+            if !controller.serverStatus.isEmpty {
+                Text(controller.serverStatus)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Server: \(controller.serverStatus)")
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+
+            // A peer the user added by address answered with an address-proof challenge, and
+            // only a server sends one. They have added a place as though it were a person.
+            if let suggested = controller.serverSuggestion {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("\(suggested) is a RemSound server, not a single peer. Connecting to it as a server shows you everyone on it who uses your password.")
+                        .font(.callout)
+                    Button("Connect to \(suggested) as a server") {
+                        controller.connectToServer(host: suggested)
+                        controller.dismissServerSuggestion()
+                    }
+                    Button("Not now") {
+                        controller.dismissServerSuggestion()
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("\(suggested) is a RemSound server, not a single peer")
+            }
+        } header: {
+            Text("Server")
+        }
+    }
+
+    /// Peers reached directly — on the network, or at an address the user typed.
+    private var networkPeers: [PeerListEntry] { controller.peers.filter { !$0.isOnServer } }
+    /// People reached through the server, which only ever means people on our password.
+    private var serverPeers: [PeerListEntry] { controller.peers.filter { $0.isOnServer } }
+
     private var peersSection: some View {
         Section {
-            if controller.peers.isEmpty {
-                Text("No peers yet. Peers on the same network appear automatically; add an address below for Tailscale or the relay.")
+            if networkPeers.isEmpty {
+                Text("No peers yet. Peers on the same network appear automatically; add an address below for Tailscale, or connect to a server above.")
                     .foregroundStyle(.secondary)
             }
-            ForEach(controller.peers) { peer in
+            ForEach(networkPeers) { peer in
                 peerRow(peer)
             }
         } header: {
-            Text("Peers")
+            Text(controller.isConnectedToServer ? "Peers not on a server" : "Peers")
         } footer: {
             Text("Tick a peer to hear its audio. Audio plays only from peers you have selected. Each peer's actions — peer details, rename, and remove for peers you added — are on the row itself, in the VoiceOver rotor's Actions or the context menu.")
         }
+    }
+
+    /// The people on the server, in their own list right under the ordinary one — one list
+    /// means one thing, so ticking somebody here moves them out of it and into the list of
+    /// peers you are connected to, exactly as it does for somebody on your network.
+    @ViewBuilder
+    private var serverPeersSection: some View {
+        if controller.isConnectedToServer {
+            Section {
+                if serverPeers.isEmpty {
+                    Text(serverPeersEmptyText)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(serverPeers) { peer in
+                    peerRow(peer)
+                }
+            } header: {
+                Text("Peers on the server")
+            } footer: {
+                Text("Only people using the same password as you ever appear here. Sound needs both ticks: tick someone and you hear each other as soon as they tick you back.")
+            }
+        }
+    }
+
+    /// Why the server list is empty, which is never obvious and has three quite different
+    /// causes — no password to be grouped by, no member list yet, or simply nobody else.
+    private var serverPeersEmptyText: String {
+        if controller.password.isEmpty {
+            return "Set a password on the Send and Receive tab. A server groups people by their password, so there is nothing to join without one."
+        }
+        if !controller.isInServerGroup {
+            return "Waiting for the server's member list…"
+        }
+        return "Nobody else on this server is using your password yet."
     }
 
     @ViewBuilder

@@ -231,6 +231,58 @@ public final class ReceiverSettings {
         set { defaults.set(Int(newValue), forKey: "listenPort") }
     }
 
+    // MARK: - Server (relay groups)
+
+    /// This device's identity on a server: 16 random bytes, picked once and kept forever.
+    /// It is what makes us the same person in everyone's member list each time, so a tick on
+    /// somebody else's device survives our restart.
+    ///
+    /// Deliberately device-local — never in a profile and never in iCloud. Two devices
+    /// sharing one id would be ONE person to every server: each would collect the other's
+    /// ticks, and the server would route one person's audio to whichever had spoken last.
+    /// A stored value that cannot be read back (absent, or the all-zero id the server uses
+    /// for itself) is replaced, not patched up.
+    public func relayClientId() -> RelayClientId {
+        if let hex = defaults.string(forKey: "relayClientId"), let id = RelayClientId(hex: hex) {
+            return id
+        }
+        let id = RelayClientId.random()
+        defaults.set(id.hex, forKey: "relayClientId")
+        return id
+    }
+
+    /// The server address the user typed, exactly as typed (a hostname, a MagicDNS name or a
+    /// dotted quad). Empty means they have never used one.
+    public var serverHost: String {
+        get { defaults.string(forKey: "serverHost") ?? "" }
+        set { defaults.set(newValue, forKey: "serverHost") }
+    }
+
+    /// Whether the user was connected to that server when the app last ran — a server is
+    /// somewhere you go, so going back there at launch is the same promise the receive and
+    /// send toggles make.
+    public var serverConnected: Bool {
+        get { defaults.bool(forKey: "serverConnected") }
+        set { defaults.set(newValue, forKey: "serverConnected") }
+    }
+
+    public static let maxRecentServers = 8
+
+    /// The servers the user has connected to before, most recent first — the list the server
+    /// sheet offers instead of making them retype an address.
+    public var recentServers: [String] {
+        get { defaults.stringArray(forKey: "recentServers") ?? [] }
+        set { defaults.set(Array(newValue.prefix(Self.maxRecentServers)), forKey: "recentServers") }
+    }
+
+    /// Whether the one-time note about a server only ever showing people on your own
+    /// password has been seen. It is the single thing that surprises people, so it is said
+    /// once, plainly, the first time.
+    public var serverPasswordNoticeSeen: Bool {
+        get { defaults.bool(forKey: "serverPasswordNoticeSeen") }
+        set { defaults.set(newValue, forKey: "serverPasswordNoticeSeen") }
+    }
+
     // MARK: - Password (Keychain)
 
     public var password: String {

@@ -24,12 +24,19 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
     /// snapshot because it changes the meaning of `targetLatencyMs`: with it on, the stored
     /// delay is a starting point the tuner moves, not a value the profile pins.
     public var autoTuneLatencyEnabled: Bool
+    /// The server to be on, exactly as the user typed it, or nil for "not on a server".
+    /// Part of the snapshot because a server is where a particular set of people are, and
+    /// `selectedPeerAddresses` already carries which of them are ticked — a profile that put
+    /// the peers back but not the server would tick people who were never there. Profiles
+    /// written before servers existed decode as nil, which correctly means "not on one".
+    public var serverHost: String?
 
     public init(id: UUID = UUID(), name: String, manualPeers: [ManualPeer],
                 selectedPeerAddresses: [String], receiveEnabled: Bool, sendEnabled: Bool,
                 selectedMicrophoneId: String?, targetLatencyMs: Int,
                 autoTuneLatencyEnabled: Bool = false,
-                sendCodec: AudioTransportCodec = .opus) {
+                sendCodec: AudioTransportCodec = .opus,
+                serverHost: String? = nil) {
         self.id = id
         self.name = name
         self.manualPeers = manualPeers
@@ -40,11 +47,13 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
         self.targetLatencyMs = targetLatencyMs
         self.autoTuneLatencyEnabled = autoTuneLatencyEnabled
         self.sendCodec = sendCodec
+        self.serverHost = serverHost
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, manualPeers, selectedPeerAddresses, receiveEnabled, sendEnabled
         case selectedMicrophoneId, targetLatencyMs, autoTuneLatencyEnabled, sendCodec
+        case serverHost
     }
 
     /// Hand-written so a field added later cannot destroy the user's profiles. Both decode
@@ -65,6 +74,7 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
             ?? ReceiverSettings.defaultTargetLatencyMs
         autoTuneLatencyEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoTuneLatencyEnabled) ?? false
         sendCodec = try container.decodeIfPresent(AudioTransportCodec.self, forKey: .sendCodec) ?? .opus
+        serverHost = try container.decodeIfPresent(String.self, forKey: .serverHost)
     }
 }
 
@@ -218,6 +228,11 @@ public final class ProfileStore {
         settings.autoTuneLatencyEnabled = profile.autoTuneLatencyEnabled
         settings.sendCodec = profile.sendCodec
         settings.password = password(forProfile: profileId)
+        // The server is a persisted setting like the rest, so the launch rewrite covers it
+        // and `start()` goes there on its own. A profile saved before servers existed, or
+        // saved while not on one, correctly says "not on a server".
+        settings.serverHost = profile.serverHost ?? ""
+        settings.serverConnected = !(profile.serverHost ?? "").isEmpty
         settings.lastAppliedProfileId = profileId
     }
 }

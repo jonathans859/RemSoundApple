@@ -58,4 +58,42 @@ final class SettingsDefaultsTests: XCTestCase {
         defaults.set(99, forKey: "sendCodec")
         XCTAssertEqual(ReceiverSettings(defaults: defaults).sendCodec, .opus)
     }
+
+    /// Our identity on a server is picked once and kept. If it moved, every tick anybody
+    /// else had made on us would be a tick on a stranger after each launch.
+    func testRelayClientIdIsGeneratedOnceAndKept() {
+        let first = ReceiverSettings(defaults: defaults).relayClientId()
+        XCTAssertFalse(first.isZero, "all zero is the server's own id, never a client's")
+        XCTAssertEqual(ReceiverSettings(defaults: defaults).relayClientId(), first)
+        XCTAssertEqual(defaults.string(forKey: "relayClientId"), first.hex)
+    }
+
+    /// A stored id that cannot be read back — truncated, not hex, or the all-zero id the
+    /// server uses for itself — is replaced rather than patched up or used as-is.
+    func testUnusableStoredRelayClientIdIsReplaced() {
+        for stored in ["", "zzzz", String(repeating: "0", count: 32), "abcd"] {
+            defaults.set(stored, forKey: "relayClientId")
+            let id = ReceiverSettings(defaults: defaults).relayClientId()
+            XCTAssertFalse(id.isZero)
+            XCTAssertEqual(id.hex.count, 32)
+            XCTAssertEqual(defaults.string(forKey: "relayClientId"), id.hex)
+        }
+    }
+
+    /// A server is somewhere you go: the app must not go anywhere on a fresh install.
+    func testServerDefaultsToNowhere() {
+        let settings = ReceiverSettings(defaults: defaults)
+        XCTAssertEqual(settings.serverHost, "")
+        XCTAssertFalse(settings.serverConnected)
+        XCTAssertTrue(settings.recentServers.isEmpty)
+        XCTAssertFalse(settings.serverPasswordNoticeSeen)
+    }
+
+    func testRecentServersAreCappedNewestFirst() {
+        let settings = ReceiverSettings(defaults: defaults)
+        settings.recentServers = (1...20).map { "server\($0).example" }
+        XCTAssertEqual(ReceiverSettings(defaults: defaults).recentServers.count,
+                       ReceiverSettings.maxRecentServers)
+        XCTAssertEqual(ReceiverSettings(defaults: defaults).recentServers.first, "server1.example")
+    }
 }

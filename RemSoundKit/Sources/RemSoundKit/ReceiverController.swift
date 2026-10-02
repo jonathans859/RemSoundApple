@@ -6,11 +6,19 @@ import UIKit
 import AppKit
 #endif
 
-/// One row in the peer list — a discovered peer, a manual entry, or both merged by address.
+/// One row in the peer list — a discovered peer, a manual entry, both merged by address, or
+/// somebody on a server.
 public struct PeerListEntry: Identifiable, Hashable, Sendable {
     public enum Source: Sendable {
         case discovered
         case manual
+        /// A person on a server, named by its member list. They have no address of their own
+        /// — through a server everybody arrives from the server's address — so this row's
+        /// endpoint is the stand-in the group client gave them, and it is never shown.
+        case server
+        /// The server's own ordinary pair slot: a phone or an older RemSound that knows
+        /// nothing about groups, reached through the server exactly as it is today.
+        case serverPair
     }
 
     public let id: String
@@ -38,10 +46,63 @@ public struct PeerListEntry: Identifiable, Hashable, Sendable {
     public let manualPeerId: UUID?
     public var isSelected: Bool
     public var statusText: String
+    /// The member's client id, as hex, when this row is somebody on a server. nil otherwise.
+    public let serverMemberId: String?
+    /// For somebody on a server: whether the member list says they have ticked us back.
+    /// nil when the question does not arise — on a network nobody can tell you, and the
+    /// server's own pair partner cannot say (being given the slot beside us stands for it).
+    public let ticksUs: Bool?
+
+    public init(id: String, name: String, machineName: String?, customName: String?,
+                identityKey: String, canSend: Bool?, canReceive: Bool?, addressString: String,
+                audioEndpoints: [UDPEndpoint], source: Source, manualPeerId: UUID?,
+                isSelected: Bool, statusText: String,
+                serverMemberId: String? = nil, ticksUs: Bool? = nil) {
+        self.id = id
+        self.name = name
+        self.machineName = machineName
+        self.customName = customName
+        self.identityKey = identityKey
+        self.canSend = canSend
+        self.canReceive = canReceive
+        self.addressString = addressString
+        self.audioEndpoints = audioEndpoints
+        self.source = source
+        self.manualPeerId = manualPeerId
+        self.isSelected = isSelected
+        self.statusText = statusText
+        self.serverMemberId = serverMemberId
+        self.ticksUs = ticksUs
+    }
 
     public var audioEndpoint: UDPEndpoint? { audioEndpoints.first }
     var addresses: [UInt32] { audioEndpoints.map(\.address) }
     var allAddressStrings: [String] { audioEndpoints.map(\.addressString) }
+
+    /// True for the two kinds of row that only exist while connected to a server.
+    public var isOnServer: Bool { source == .server || source == .serverPair }
+
+    /// What to call this peer when the user has no name of their own for it: the name it
+    /// announces, else the best thing there is. Somebody on a server has no address to fall
+    /// back on, so it must not be offered one.
+    public var fallbackName: String {
+        if let machineName { return machineName }
+        switch source {
+        case .server: return "the name they give on the server"
+        case .serverPair: return "someone on a phone or an older app"
+        case .discovered, .manual: return addressString
+        }
+    }
+
+    /// What goes in `ReceiverSettings.selectedPeerAddresses` for this row. Somebody on a
+    /// server has no address to key on, so their client id is the key — which is also what
+    /// makes a tick outlive their restart, and ours.
+    var selectionKeys: [String] {
+        if let serverMemberId { return [ReceiverController.serverSelectionKey(hex: serverMemberId)] }
+        var keys = Set(allAddressStrings)
+        keys.insert(addressString)
+        return Array(keys)
+    }
 }
 
 /// Holds a NotificationCenter observer token and unregisters it when it goes away, so an
@@ -87,6 +148,27 @@ public final class ReceiverController {
     /// ROWS deliberately keep their one-line summary, so opening a peer is what costs the
     /// extra detail, exactly as the Diagnostics button does for the connection panel.
     public private(set) var peerDetails: [String: [String]] = [:]
+    /// What the server connection is doing, as one plain sentence for the Connectivity tab.
+    /// Empty when the user has never connected to one.
+    public private(set) var serverStatus = ""
+    /// The server address the user last typed, exactly as typed. The connect sheet starts
+    /// from this.
+    public private(set) var serverAddress = ""
+    /// True from the moment the user asks to connect until they ask to leave — NOT the same
+    /// as being in a group, which also needs a password and a member list.
+    public private(set) var isConnectedToServer = false
+    /// A member list has arrived in the last few seconds, so the server list is live and our
+    /// audio is going out group-framed. Everything about groups hangs off this.
+    public private(set) var isInServerGroup = false
+    /// Servers used before, most recent first — what the sheet offers instead of retyping.
+    public private(set) var recentServers: [String] = []
+    /// The one-time note about a server only ever showing people on your own password: the
+    /// one thing that surprises people, so it is said once, plainly, the first time.
+    public private(set) var showServerPasswordNotice = false
+    /// A peer the user added by address has turned out to be a server — it answered with an
+    /// address-proof challenge, and nothing else sends one. The host they typed, so the UI
+    /// can offer to connect to it as a server instead; nil once offered and dismissed.
+    public private(set) var serverSuggestion: String?
     /// Inputs the user can pick for microphone sending. Refreshed when the hardware set
     /// changes (route change / device list notifications), at start, and on send start —
     /// never on a timer; enumeration IPC alongside live playback causes audible glitches.
@@ -354,6 +436,9 @@ public final class ReceiverController {
         didSet {
             settings.password = password
             applyPassword()
+            // A new password is a new group on the server, so the people we had ticked there
+            // are people we can no longer see or hear. Their ids go with them.
+            if password != oldValue { clearServerMemberSelections() }
         }
     }
 
@@ -399,6 +484,23 @@ public final class ReceiverController {
     private let remoteControls = RemoteTransportControls()
     private let sendEngine = AudioSendEngine()
     private let microphone = MicrophoneCapture()
+    /// Being one of several people on a server. Dormant until `connectToServer` — a server
+    /// is somewhere you go, not a peer that turns up.
+    private let relayGroup: RelayGroupClient
+    /// The resolved endpoint of `serverAddress`, once DNS has had a go at it.
+    private var serverEndpoint: UDPEndpoint?
+    private var serverResolveInFlight = false
+    private var lastServerResolveAttempt = Date.distantPast
+    /// True only while `applyProfile` is rewriting the live configuration — see there.
+    private var applyingProfile = false
+    /// The live password's 8-byte fingerprint, kept here because it is also the server's
+    /// **group tag** — the server groups by it and nothing else. nil while there is no
+    /// password, or while the first derivation is still running.
+    private var currentFingerprint: [UInt8]?
+    /// The last few things the server told us, newest last — surfaced in the Diagnostics
+    /// panel so a group that will not form leaves a trail to read.
+    private var serverLog: [String] = []
+    private static let serverLogDepth = 12
     private var sendTargetCount = 0
     private var mixer: PlayoutMixer { engine.mixer }
 
@@ -483,6 +585,9 @@ public final class ReceiverController {
         // read below — rewriting-then-loading avoids every didSet/engine side effect.
         ProfileStore().applyStartupProfile(to: ReceiverSettings())
 
+        // Picked once per install and kept: it is what makes us the same person in every
+        // server's member list, so somebody else's tick survives our restart.
+        relayGroup = RelayGroupClient(clientId: settings.relayClientId())
         manualPeers = settings.manualPeers
         selectedAddresses = settings.selectedPeerAddresses
         peerNames = PeerNameBook(settings.peerNames)
@@ -536,6 +641,30 @@ public final class ReceiverController {
         engine.onHeartbeatReceived = { [heartbeat] payload, remote in
             heartbeat.handleHeartbeatPayload(payload, remote: remote)
         }
+
+        // The server path. `rawTransport` deliberately bypasses routing: a hello and a bye
+        // are already group-framed, and wrapping them a second time would make nonsense of
+        // both. Everything else the app sends goes through `sendFromAudioSocket`, which asks
+        // the group client what to do with it.
+        relayGroup.rawTransport = { [engine] data, endpoint in
+            engine.sendRawFromAudioSocket(data, to: endpoint)
+        }
+        relayGroup.onEvent = { [weak self] event in
+            Task { @MainActor [weak self] in self?.handleServerEvent(event) }
+        }
+        engine.onAddrCheckReceived = { [weak self] endpoint in
+            Task { @MainActor [weak self] in self?.noteAddressCheck(from: endpoint) }
+        }
+        relayGroup.onChanged = { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // A member appearing or leaving changes who is allowed to be heard and who
+                // our microphone reaches, exactly as a discovery change does.
+                self.applyPeerSelection()
+                self.refreshNow()
+            }
+        }
+        engine.setRelayGroup(relayGroup)
         heartbeat.sendTransport = { [engine] data, endpoint in
             engine.sendFromAudioSocket(data, to: endpoint)
         }
@@ -572,6 +701,9 @@ public final class ReceiverController {
         }
         selectedMicrophoneId = settings.selectedMicrophoneId
         microphone.setPreferredInput(id: selectedMicrophoneId)
+        serverAddress = settings.serverHost
+        recentServers = settings.recentServers
+        showServerPasswordNotice = !settings.serverPasswordNoticeSeen
 
         // Another device changed the shared profile set. The notification also fires for
         // the initial download after a fresh install, which is how a new device picks up
@@ -619,6 +751,11 @@ public final class ReceiverController {
         applyRemoteControls()
         applyPeerSelection()
         resolveManualPeers()
+        // A server is somewhere you go, and the user left the app standing there. Not a
+        // "remember", so returning at launch does not reorder the recents list.
+        if settings.serverConnected, !settings.serverHost.isEmpty {
+            connectToServer(host: settings.serverHost, remember: false)
+        }
 
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -645,6 +782,12 @@ public final class ReceiverController {
         refreshTask = nil
         discovery.stop()
         heartbeat.stop()
+        // Say goodbye so the others see us go at once. The persisted intent is untouched:
+        // the user has not left the server, the app has stopped.
+        relayGroup.disconnect()
+        isConnectedToServer = false
+        isInServerGroup = false
+        serverEndpoint = nil
         remoteControls.deactivate()
         output.stop()
         engine.stop()
@@ -673,9 +816,13 @@ public final class ReceiverController {
         let generation = passwordGeneration
         guard !password.isEmpty else {
             // No password = no key: stop decrypting and sending immediately (the engines
-            // otherwise keep running on the previously derived key).
+            // otherwise keep running on the previously derived key). And no group to join:
+            // the server has nothing to group us by.
             engine.setKeyMaterial(key: nil, fingerprint: nil)
             sendEngine.setKeyMaterial(key: nil, fingerprint: nil)
+            currentFingerprint = nil
+            relayGroup.setIdentity(name: Self.deviceName(), passwordFingerprint: nil)
+            updateServerStatus()
             return
         }
         // PBKDF2 at 100k iterations takes ~50-100 ms — off the main actor. Derived once,
@@ -688,6 +835,12 @@ public final class ReceiverController {
                 guard let self, self.passwordGeneration == generation else { return }
                 self.engine.setKeyMaterial(key: key, fingerprint: fingerprint)
                 self.sendEngine.setKeyMaterial(key: key, fingerprint: fingerprint)
+                self.currentFingerprint = fingerprint
+                // The same eight bytes are the server's group tag, so a password change is a
+                // move to a different group: the client resends its hello at once with the
+                // new tag and an empty tick list.
+                self.relayGroup.setIdentity(name: Self.deviceName(), passwordFingerprint: fingerprint)
+                self.updateServerStatus()
             }
         }
     }
@@ -720,11 +873,184 @@ public final class ReceiverController {
         refreshNow()
     }
 
+    // MARK: - Servers
+
+    /// What a ticked server member is stored under in `selectedPeerAddresses`. Their client
+    /// id, not an address: through a server everybody arrives from the server's address, and
+    /// keying on the id is what makes a tick outlive their restart — and ours.
+    public static func serverSelectionKey(hex: String) -> String { "server-member-\(hex)" }
+
+    /// Go to a server. From then on we say hello to it every couple of seconds and the
+    /// people on it who share our password appear in their own part of the peer list, to be
+    /// ticked like anybody else.
+    ///
+    /// `remember` is false only when this is the app returning at launch to where the user
+    /// left it — the recents list should not reorder itself just because the app restarted.
+    public func connectToServer(host: String, remember: Bool = true) {
+        let trimmed = host.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        if !isRunning { start() } // the server path shares the receiver's one socket
+        let changed = trimmed != serverAddress
+        serverAddress = trimmed
+        settings.serverHost = trimmed
+        settings.serverConnected = true
+        isConnectedToServer = true
+        if changed { serverEndpoint = nil }
+        if remember { rememberServer(trimmed) }
+        // Said out loud the first time, not just written on the server screen: a screen-reader
+        // user who connects straight from the list of servers they have used never arrows
+        // past the note, and "why is this list empty?" is exactly the moment it answers.
+        if remember, showServerPasswordNotice {
+            markServerPasswordNoticeSeen()
+            announce("Please note: on a server you only see and connect to people using the same password as yours.")
+        }
+        resolveServerIfNeeded(force: true)
+        updateServerStatus()
+        refreshNow()
+    }
+
+    /// Leave the server. The ticks are deliberately kept: a tick belongs to a person, not to
+    /// a moment, so coming back here (or applying a profile that does) puts them straight
+    /// back and they take effect the moment those people appear in the list again.
+    public func disconnectFromServer() {
+        guard isConnectedToServer else { return }
+        settings.serverConnected = false
+        isConnectedToServer = false
+        isInServerGroup = false
+        serverEndpoint = nil
+        relayGroup.disconnect()
+        applyPeerSelection()
+        updateServerStatus()
+        refreshNow()
+        announce("Left the server")
+    }
+
+    /// An address-proof challenge arrived. **Only a server sends one**, so an address the
+    /// user typed into the add-a-peer box which answers with a challenge is a server they
+    /// have added as though it were a person — and a server is somewhere you go. Offer it.
+    private func noteAddressCheck(from endpoint: UDPEndpoint) {
+        guard serverSuggestion == nil, endpoint != serverEndpoint else { return }
+        guard let peer = manualPeers.first(where: {
+            (manualResolved[$0.id] ?? []).contains { $0.address == endpoint.address }
+        }) else { return }
+        serverSuggestion = peer.host
+    }
+
+    /// "Not now" on the offer above. Not asked again this run.
+    public func dismissServerSuggestion() {
+        serverSuggestion = nil
+    }
+
+    /// The user has read the note about a server only ever showing people on their own
+    /// password. Said once, like upstream's.
+    public func markServerPasswordNoticeSeen() {
+        guard showServerPasswordNotice else { return }
+        settings.serverPasswordNoticeSeen = true
+        showServerPasswordNotice = false
+    }
+
+    public func forgetServer(host: String) {
+        recentServers.removeAll { $0.caseInsensitiveCompare(host) == .orderedSame }
+        settings.recentServers = recentServers
+    }
+
+    private func rememberServer(_ host: String) {
+        var list = recentServers.filter { $0.caseInsensitiveCompare(host) != .orderedSame }
+        list.insert(host, at: 0)
+        recentServers = Array(list.prefix(ReceiverSettings.maxRecentServers))
+        settings.recentServers = recentServers
+    }
+
+    /// Resolve the server's address and hand it to the group client. A server is commonly a
+    /// name (a MagicDNS name, a dynamic-DNS host), so this is the same blocking lookup the
+    /// manual peers get, on the same detached task, with the same retry off the 1 Hz tick —
+    /// an address typed before the tunnel is up heals itself.
+    private func resolveServerIfNeeded(force: Bool = false) {
+        guard isConnectedToServer, !serverAddress.isEmpty, !serverResolveInFlight else { return }
+        guard force || serverEndpoint == nil,
+              force || Date().timeIntervalSince(lastServerResolveAttempt) >= Self.resolveRetryInterval
+        else { return }
+        serverResolveInFlight = true
+        lastServerResolveAttempt = Date()
+        let host = serverAddress
+        Task.detached { [weak self] in
+            let endpoints = UDPEndpoint.resolve(host: host, port: RemPacket.defaultPort)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.serverResolveInFlight = false
+                // The user may have left, or gone somewhere else, while this was in flight.
+                guard self.isConnectedToServer, self.serverAddress == host else { return }
+                guard let endpoint = endpoints.first else {
+                    self.updateServerStatus()
+                    return
+                }
+                self.serverEndpoint = endpoint
+                self.relayGroup.setIdentity(name: Self.deviceName(),
+                                            passwordFingerprint: self.currentFingerprint)
+                self.relayGroup.connect(to: endpoint)
+                self.applyPeerSelection()
+                self.updateServerStatus()
+                self.refreshNow()
+            }
+        }
+    }
+
+    private func handleServerEvent(_ event: RelayGroupEvent) {
+        serverLog.append(event.message)
+        if serverLog.count > Self.serverLogDepth { serverLog.removeFirst() }
+        if let spoken = event.announcement { announce(spoken) }
+        updateServerStatus()
+        refreshNow()
+    }
+
+    private func updateServerStatus() {
+        let joined = relayGroup.isInGroup
+        if isInServerGroup != joined { isInServerGroup = joined }
+
+        let text: String
+        if !isConnectedToServer {
+            text = serverAddress.isEmpty ? "" : "Not connected to a server"
+        } else if serverEndpoint == nil {
+            text = "Looking up \(serverAddress)…"
+        } else if password.isEmpty {
+            // The server groups by the password fingerprint and nothing else, so without one
+            // there is nothing to join — and an empty list with no explanation is the worst
+            // thing we could show here.
+            text = "Connected to \(serverAddress), but a group needs a password. Set one in Send and Receive."
+        } else if !joined {
+            text = "Connected to \(serverAddress), waiting for its member list…"
+        } else {
+            let others = relayGroup.members.count
+            var sentence = others == 0
+                ? "On \(serverAddress). Nobody else here is using your password yet"
+                : "On \(serverAddress) with \(others) other\(others == 1 ? "" : "s") on your password"
+            if relayGroup.isPairedWithOrdinary {
+                sentence += ", plus someone on a phone or an older app"
+            }
+            text = sentence
+        }
+        if text != serverStatus { serverStatus = text }
+    }
+
+    /// Drop every ticked server member. A new password is a new group, so the ids we were
+    /// ticking belong to people we can no longer see or hear — upstream drops them for the
+    /// same reason, and says so.
+    private func clearServerMemberSelections() {
+        guard !applyingProfile else { return }
+        let before = selectedAddresses.count
+        selectedAddresses = selectedAddresses.filter { !$0.hasPrefix("server-member-") }
+        guard selectedAddresses.count != before else { return }
+        settings.selectedPeerAddresses = selectedAddresses
+        applyPeerSelection()
+    }
+
+    // MARK: - Peer selection
+
     public func setPeerSelected(_ entry: PeerListEntry, selected: Bool) {
         // Select/deselect every address the peer is reachable at, plus the manual hostname
-        // if there is one, so the choice survives path changes and re-resolution.
-        var strings = Set(entry.allAddressStrings)
-        strings.insert(entry.addressString)
+        // if there is one, so the choice survives path changes and re-resolution. A person on
+        // a server has no address, so their row's key is their client id.
+        var strings = Set(entry.selectionKeys)
         if let manualId = entry.manualPeerId,
            let manual = manualPeers.first(where: { $0.id == manualId }) {
             strings.insert(manual.host)
@@ -752,7 +1078,7 @@ public final class ReceiverController {
         if let resolved = peerNames.name(for: entry.identityKey) {
             announce("Peer renamed to \(resolved)")
         } else {
-            announce("Custom name cleared. This peer is now \(entry.machineName ?? entry.addressString)")
+            announce("Custom name cleared. This peer is now \(entry.fallbackName)")
         }
     }
 
@@ -830,6 +1156,12 @@ public final class ReceiverController {
     /// touched — volume, cues, exclusive audio, and the rest stay as they are.
     public func applyProfile(id: UUID) {
         guard let profile = profiles.first(where: { $0.id == id }) else { return }
+        // The password's didSet drops ticked server members, because a new password really is
+        // a new group — but during an apply that would eat the very ticks the profile has
+        // just restored. Guarded rather than reordered: a later reshuffle of the assignments
+        // below must not be able to bring the bug back.
+        applyingProfile = true
+        defer { applyingProfile = false }
         manualPeers = profile.manualPeers
         settings.manualPeers = manualPeers
         // Keep resolutions for peers that survive the swap (matched by id); drop the rest.
@@ -852,6 +1184,14 @@ public final class ReceiverController {
         // Applying a profile is an explicit user tap, so a profile with sending on turning
         // the mic on here does not break the "mic never goes hot at launch" rule.
         sendEnabled = profile.sendEnabled
+        // The server last, like the send switch: by now the password the group tag comes
+        // from is in place, and the ticks restored above take effect the moment the member
+        // list names those people — a tick belongs to a person, not to a moment.
+        if let host = profile.serverHost, !host.isEmpty {
+            connectToServer(host: host, remember: false)
+        } else if isConnectedToServer {
+            disconnectFromServer()
+        }
         markApplied(profile.id)
         applyPeerSelection()
         resolveManualPeers()
@@ -877,7 +1217,8 @@ public final class ReceiverController {
             selectedMicrophoneId: selectedMicrophoneId,
             targetLatencyMs: targetLatencyMs,
             autoTuneLatencyEnabled: autoTuneLatencyEnabled,
-            sendCodec: sendCodec)
+            sendCodec: sendCodec,
+            serverHost: isConnectedToServer && !serverAddress.isEmpty ? serverAddress : nil)
     }
 
     private func resolveManualPeers() {
@@ -977,6 +1318,38 @@ public final class ReceiverController {
             if groups[grace.endpoint.address] == nil { groups[grace.endpoint.address] = grace.identity }
         }
 
+        // People on a server. Each has a stand-in address of their own, which is what the
+        // allow-list gates and the heartbeat pings; the tick itself goes to the server in
+        // the hello, and that — not the allow-list — is what decides who hears whom, in both
+        // directions, because the server passes nothing until each has ticked the other.
+        var tickedMembers: Set<RelayClientId> = []
+        for member in relayGroup.members {
+            groups[member.endpoint.address] = "s-\(member.id.hex)"
+            guard selectedAddresses.contains(Self.serverSelectionKey(hex: member.id.hex)) else { continue }
+            tickedMembers.insert(member.id)
+            allowed.insert(member.endpoint.address)
+            if !tracked.contains(member.endpoint) { tracked.append(member.endpoint) }
+        }
+
+        // The server's ordinary pair slot, if we hold one: a phone or an older app whose
+        // audio arrives from the server's OWN address in version-1 framing. Keyed by that
+        // address, so a user who had already added the server as a peer and the row the
+        // server list shows are one row with one tick, never the same person twice.
+        var pairPartnerTicked = false
+        if let serverEndpoint = self.serverEndpoint {
+            // Heartbeats go to the server for as long as we are there, ticked partner or
+            // not: the ordinary one is what claims a pair slot beside a phone that is
+            // waiting for one, and it keeps the pinhole open either way.
+            if !tracked.contains(serverEndpoint) { tracked.append(serverEndpoint) }
+            if groups[serverEndpoint.address] == nil { groups[serverEndpoint.address] = "s-pair" }
+            if relayGroup.isPairedWithOrdinary,
+               selectedAddresses.contains(serverEndpoint.addressString) {
+                pairPartnerTicked = true
+                allowed.insert(serverEndpoint.address)
+            }
+        }
+        relayGroup.setTicked(tickedMembers, pairPartner: pairPartnerTicked)
+
         engine.setPeerAddressGroups(groups)
         engine.setAllowedSenders(allowed)
         heartbeat.setTrackedPeers(tracked)
@@ -1019,6 +1392,10 @@ public final class ReceiverController {
         // also fires the connect/lost VoiceOver announcements, which background screen-reader
         // users depend on, so it is never gated.
         retryUnresolvedPeersIfNeeded()
+        // The server's own clock: the hello when it is due, and noticing a server that has
+        // stopped answering. No timer of its own — this tick is it.
+        relayGroup.tick()
+        resolveServerIfNeeded()
         refreshPeerList()
         updateCues()
         updateSendTargets()
@@ -1039,6 +1416,7 @@ public final class ReceiverController {
         // refresh so the UI never shows stale data on return.
         guard uiVisible else { return }
         updateSendStatus()
+        updateServerStatus()
         updateSummary()
         updateConnectionDetails()
         updatePeerDetails()
@@ -1128,14 +1506,30 @@ public final class ReceiverController {
         sendEngine.setCaptureLatencyMs(microphone.reportedInputLatencyMs)
         let health = heartbeat.allPeerHealth()
         var targets: [UDPEndpoint] = []
+        var people = 0
+        var needsServerCopy = false
         for entry in peers where entry.isSelected && !entry.audioEndpoints.isEmpty {
+            people += 1
+            // Everybody reached through a server shares ONE datagram: we send a single
+            // group-framed copy to the server and it makes the copies, one per person due
+            // it. A copy per person would put the same audio on our link N times and have
+            // the server fan out every one of them.
+            if entry.isOnServer {
+                needsServerCopy = true
+                continue
+            }
             if let best = bestHealth(for: entry.addresses, in: health), best.state == .healthy {
                 targets.append(best.audioEndpoint)
             } else if let primary = entry.audioEndpoint {
                 targets.append(primary)
             }
         }
-        sendTargetCount = targets.count
+        if needsServerCopy, let serverEndpoint = self.serverEndpoint,
+           !targets.contains(serverEndpoint) {
+            targets.append(serverEndpoint)
+        }
+        // The count the status line reads is people, not datagrams.
+        sendTargetCount = people
         sendEngine.setTargets(targets)
     }
 
@@ -1204,6 +1598,10 @@ public final class ReceiverController {
             lines.append("\(entry.name): \(status)")
         }
 
+        if isConnectedToServer || !serverStatus.isEmpty {
+            lines.append(serverStatus.isEmpty ? "Server: not connected" : "Server: \(serverStatus)")
+        }
+
         lines.append("Uptime: \(Self.formatDuration(engine.uptime))")
 
         // Per-second rates from the counter deltas since the previous tick. Bursty refreshes
@@ -1262,6 +1660,7 @@ public final class ReceiverController {
         }
 
         appendTransportDiagnostics(to: &tech, now: now)
+        appendServerDiagnostics(to: &tech)
         appendNetworkDiagnostics(to: &tech)
 
         if lines != connectionDetails { connectionDetails = lines }
@@ -1517,6 +1916,23 @@ public final class ReceiverController {
     /// *absence* of a command too: "nothing has been routed to us" and "we were sent
     /// something and ignored it" look identical from the outside, and they need opposite
     /// fixes.
+    /// What the server has been doing. Worth a panel of its own because a group that will
+    /// not form is otherwise completely silent about why: a password that does not match
+    /// anybody's, a full server, a member list that never arrives. The trail is what tells
+    /// those three apart.
+    private func appendServerDiagnostics(to tech: inout [String]) {
+        guard isConnectedToServer || !serverLog.isEmpty else { return }
+        if isConnectedToServer {
+            tech.append("Server: \(serverAddress)\(serverEndpoint.map { " (\($0.addressString))" } ?? ", not resolved")")
+            tech.append("Group: \(isInServerGroup ? "joined, member list arriving" : "not joined")")
+            tech.append("Our id on the server: \(relayGroup.clientId.shortHex)")
+            if relayGroup.isPairedWithOrdinary {
+                tech.append("Also holding one of the server's ordinary pair slots")
+            }
+        }
+        for line in serverLog.suffix(6) { tech.append("Server: \(line)") }
+    }
+
     private func appendTransportDiagnostics(to tech: inout [String], now: Date) {
         guard headsetTransportControls else {
             tech.append("Headset controls: off")
@@ -1559,6 +1975,69 @@ public final class ReceiverController {
     private func refreshPeerList() {
         var entries: [PeerListEntry] = []
         var seenAddresses: Set<String> = []
+
+        // People on a server, first, because the manual loop below merges a row away when
+        // one of these already covers its address. Nobody is ever typed in as one of these:
+        // they arrive only from the server's member list, and they go when it stops saying
+        // they are there.
+        if let serverEndpoint = self.serverEndpoint {
+            for member in relayGroup.members {
+                let announced = member.name.isEmpty ? nil : member.name
+                // Keyed on the announced name, like every other row, so one rename covers
+                // the same machine whether it is reached over the network or through a
+                // server; the client id is the key for a member nobody has named yet.
+                let key = PeerNameBook.identityKey(machineName: announced,
+                                                   fallback: "server-\(member.id.hex)")
+                let custom = peerNames.name(for: key)
+                let selected = selectedAddresses.contains(Self.serverSelectionKey(hex: member.id.hex))
+                entries.append(PeerListEntry(
+                    id: "s-\(member.id.hex)",
+                    name: custom ?? announced ?? "Someone not yet named",
+                    machineName: announced,
+                    customName: custom,
+                    identityKey: key,
+                    canSend: nil, // a member list says who is there, not what they can do
+                    canReceive: nil,
+                    // Never the stand-in address: a person on a server has no address of
+                    // their own, and showing a made-up one is a lie the user cannot check.
+                    addressString: "on the server",
+                    audioEndpoints: [member.endpoint],
+                    source: .server,
+                    manualPeerId: nil,
+                    isSelected: selected,
+                    statusText: statusText(addresses: [member.endpoint.address],
+                                           selected: selected, ticksUs: member.ticksUs),
+                    serverMemberId: member.id.hex,
+                    ticksUs: member.ticksUs))
+            }
+
+            // The server's ordinary pair slot. A phone or an older RemSound knows nothing
+            // about ticking and so can never say it has ticked us — being GIVEN the slot
+            // beside us is the same statement, so it appears here and is ticked like anybody
+            // else. Upstream did not do this at first and had an iPhone sit in the list
+            // saying "connected" while playing nothing for two and a half minutes.
+            if relayGroup.isPairedWithOrdinary {
+                let key = PeerNameBook.identityKey(machineName: nil,
+                                                   fallback: serverEndpoint.addressString)
+                let custom = peerNames.name(for: key)
+                let selected = selectedAddresses.contains(serverEndpoint.addressString)
+                entries.append(PeerListEntry(
+                    id: "s-pair",
+                    name: custom ?? "Someone on a phone or an older app",
+                    machineName: nil,
+                    customName: custom,
+                    identityKey: key,
+                    canSend: nil,
+                    canReceive: nil,
+                    addressString: serverEndpoint.addressString,
+                    audioEndpoints: [serverEndpoint],
+                    source: .serverPair,
+                    manualPeerId: nil,
+                    isSelected: selected,
+                    statusText: statusText(addresses: [serverEndpoint.address], selected: selected)))
+                seenAddresses.insert(serverEndpoint.addressString)
+            }
+        }
 
         for peer in discovery.currentPeers {
             let selected = peer.addressStrings.contains { selectedAddresses.contains($0) }
@@ -1629,9 +2108,17 @@ public final class ReceiverController {
         if entries != peers { peers = entries }
     }
 
-    private func statusText(addresses: [UInt32], selected: Bool) -> String {
+    /// `ticksUs` applies only to somebody on a server, where the member list is the one
+    /// place that difference is visible. nil means the question does not arise.
+    private func statusText(addresses: [UInt32], selected: Bool, ticksUs: Bool? = nil) -> String {
         guard isRunning else { return "—" }
-        guard selected else { return "Not selected" }
+        guard selected else {
+            // They have ticked us and we have not ticked back: the one case where an
+            // unselected row is the user's move to make, so say so rather than just "no".
+            return ticksUs == true
+                ? "Not selected. They have ticked you — tick them back to hear each other"
+                : "Not selected"
+        }
 
         var parts: [String] = []
         let flowing = addresses.first { engine.isAudioFlowing(from: $0, within: 1.5) }
@@ -1640,6 +2127,10 @@ public final class ReceiverController {
         } else {
             parts.append("No audio")
         }
+        // Sound needs both ticks. Saying which half is missing is the whole reason the
+        // member list carries a flag for it — silence with no explanation looks exactly
+        // like a broken link, and it is the one thing a person cannot work out alone.
+        if ticksUs == false { parts.append("waiting for them to tick you") }
 
         // Worst-news-first across the peer's paths: a mismatch on any of them matters more
         // than a clean link on another.
@@ -1685,6 +2176,52 @@ public final class ReceiverController {
     private func peerDetailLines(for entry: PeerListEntry, health: [PeerHealth], now: Date) -> [String] {
         var lines: [String] = []
         if let custom = entry.customName { lines.append("Name: \(custom)") }
+
+        // Somebody on a server has no address of their own and no announcement behind them,
+        // so the ordinary address lines would be a stand-in nobody can act on.
+        if entry.isOnServer {
+            if entry.source == .server {
+                lines.append("Machine name: \(entry.machineName ?? "not named on the server yet")")
+                lines.append("Reached through the server at \(serverAddress)")
+                lines.append("Everyone on a server shares its address, so this person has none of their own")
+                switch entry.ticksUs {
+                case true: lines.append("They have ticked you")
+                case false: lines.append("They have not ticked you yet — sound needs both ticks, so there will be none until they do")
+                case nil: break
+                }
+            } else {
+                lines.append("A phone or an older RemSound, paired with you through the server at \(serverAddress)")
+                lines.append("Address: \(entry.addressString), the server's own — an older app cannot say it has ticked you, so holding the slot beside you stands for it")
+            }
+            lines.append(entry.isSelected ? "Selected: yes, audio from this person plays here"
+                                          : "Selected: no, audio from this person is ignored")
+            if let since = cueTracker.connectedSince(id: entry.id) {
+                lines.append("Connected for: \(Self.formatDuration(now.timeIntervalSince(since)))")
+            }
+            let best = bestHealth(for: entry.addresses, in: health)
+            switch best?.state {
+            case .healthy:
+                lines.append(best?.rttMs.map { "Link: healthy, round trip \($0) ms through the server" }
+                    ?? "Link: healthy, round trip pending")
+            case .stale: lines.append("Link: unstable, replies have stopped for a moment")
+            case .unreachable: lines.append("Link: not responding")
+            case .unknown: lines.append("Link: waiting for the first reply")
+            case nil: lines.append("Link: not being checked, tick this person to connect to them")
+            }
+            lines.append("Sending: \(describeIncoming(from: entry))")
+            if !sendEnabled {
+                lines.append("Your microphone: not being sent, sending is off")
+            } else if !entry.isSelected {
+                lines.append("Your microphone: not sent to this person, they are not ticked")
+            } else {
+                lines.append("Your microphone: sent to the server for them as \(sendCodec.displayName)")
+            }
+            // Everyone in a group is on the same password by definition — the server groups
+            // by its fingerprint — so there is nothing to warn about, only to confirm.
+            lines.append("Encryption: everyone on a server group shares your password, so the link is encrypted")
+            return lines
+        }
+
         lines.append("Machine name: \(entry.machineName ?? "not announced, this peer was added by address")")
 
         if let primary = entry.audioEndpoint {

@@ -105,7 +105,7 @@ struct PeerDetailsView: View {
                 controller.renamePeer(peer, to: nil)
             }
             .disabled(peer.customName == nil)
-            .accessibilityHint("Clears your own name for this peer, leaving \(peer.machineName ?? peer.addressString)")
+            .accessibilityHint("Clears your own name for this peer, leaving \(peer.fallbackName)")
         } header: {
             Text("Name")
         } footer: {

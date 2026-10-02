@@ -47,6 +47,9 @@ final class ProfileCompatibilityTests: XCTestCase {
         XCTAssertNil(profiles.first?.selectedMicrophoneId)
         // Absent field takes the same default as a fresh install: auto-tune is opt-in.
         XCTAssertEqual(profiles.first?.autoTuneLatencyEnabled, false)
+        // Written long before servers carried groups — "not on a server", which is also what
+        // applying it must do.
+        XCTAssertNil(profiles.first?.serverHost)
     }
 
     func testLegacyProfileSurvivesAReSaveAndGainsTheNewField() {
