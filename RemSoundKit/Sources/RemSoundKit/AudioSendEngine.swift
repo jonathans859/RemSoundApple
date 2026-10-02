@@ -212,6 +212,9 @@ public final class AudioSendEngine {
         }
         guard let ciphertext = encryptor.tryEncrypt(pcmScratch[0..<(frameFloats * 3)]) else { return }
 
+        // Our 2.5 ms frame encrypts to 748 bytes, so this never actually splits — worth
+        // knowing if the frame size is ever raised, because a frame sent through a server
+        // carries 16 more bytes of group framing on top of whatever this produces.
         let maxPart = RemPacket.maxAudioPayloadBytes
         let totalParts = (ciphertext.count + maxPart - 1) / maxPart
         guard totalParts > 0, totalParts <= Int(UInt8.max) else { return }

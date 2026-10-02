@@ -78,6 +78,44 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   and **ungated by the allow-list** (the challenge comes from the relay, not a selected peer).
   Watch-only upstream today — when the relay flips `--require-addr-check`, a client that never
   echoes has all forwarded traffic withheld. Pinned by `AddrCheckTests`.
+  Receiving one is also the **only** way to tell that an address is a server — nothing else
+  sends them (`AudioReceiverEngine.onAddrCheckReceived`).
+- **Server groups** (header version **2**, upstream server-v2.9 / Windows 6.0, notes dropped
+  2026-09-21 in `~/Downloads/remsound-for-jonathan`): a server used to carry one pair; now
+  everyone on it with the same password is one group. Framing = the ordinary 12-byte header
+  with version 2, then the sender's **16-byte client id** @12, then the ordinary payload
+  untouched @28 (+16 bytes/packet; our 2.5 ms PCM frame is far under one datagram either way).
+  Types 6-9 are hello / roster / full / bye. Hello (every 2 s, and at once on any change):
+  32-byte name (UTF-8, cut on a **character** boundary, zero-padded) + 8-byte group tag =
+  **the password fingerprint we already put at Format @36** + 1 count byte + count×16 ticked
+  ids. **No password = no group** (the server groups by that tag and nothing else). Omitting
+  the count byte entirely means "everyone in my group", which is what every pre-groups client
+  sends — that is exactly why nothing we shipped before this breaks. Roster (type 7, ~1 Hz,
+  client id all zeros): count + count×49 (16 id + 32 name + 1 flags; **48** before v2.9, so
+  take the entry size from the payload length) + 1 list-flags byte; per-member bit 0 = *that
+  member has ticked us*, list bit 0 = we also hold an ordinary pair slot. **The server
+  includes us in our own roster — skip our own id.** Sound flows only when both sides have
+  ticked each other. `RelayGroupProtocol.swift` + `RelayGroupClient.swift`, pinned by
+  `RelayGroupProtocolTests` / `RelayGroupClientTests`.
+  Three rules that are not optional: (1) the **safety rail** — until a roster has arrived
+  within 5 s, behave exactly as before (ordinary framing, echo address checks, pair), and go
+  straight back to that if the rosters stop; (2) a member exists ONLY because a roster said
+  so, so when the group goes cold **every** scrap of per-server state goes with it — upstream
+  half-remembered members and they could then never be listed again, because the only place a
+  member is added is a roster naming someone not already held; (3) heartbeats go out in
+  **both** framings (the ordinary one claims the pair slot beside a phone), audio/format/
+  control only also go ordinary while the list says we hold that slot *and* the user ticked
+  the partner, and address checks are **never** group-framed.
+  Members have no address of their own, so each gets a **stand-in endpoint in 240.0.0.0/5**
+  (FNV-1a of the client id, Windows parity) and everything this port keys by address works
+  per person unchanged. Never show that address to the user; never let a packet addressed to
+  one reach the socket.
+- **Heartbeat pongs are matched to our own recent pings** by the echoed originator timestamp,
+  not just by source IP (`HeartbeatService.recentPingTicks`). Through a server every member's
+  pong reaches every other member carrying the clock of whoever pinged, so an unmatched pong
+  arrives routinely — crediting it computes a round trip from a stranger's clock and holds a
+  peer "healthy" on traffic that says nothing about whether it can hear us. Pinned by
+  `HeartbeatTests`.
 - **Allow-list**: gate audio/format by source **IP**, not port. Sessions keyed
   (endpoint, streamId), but superseded by **peer identity** + lane, not by endpoint equality
   (issue #8): one new session drops every other session of the same peer on the same lane,

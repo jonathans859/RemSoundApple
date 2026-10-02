@@ -19,7 +19,18 @@ public enum RemPacketType: UInt8 {
     /// parsed and dropped, same wire-safety contract as old Windows peers.
     /// (Windows 5.6+ seals this payload with the audio key; we ignore it either way.)
     case control = 5
-    // 6-9 are the relay's v2 lobby types (hello / roster / full / bye) — out of scope.
+    // 6-9 belong to the server's group protocol (`RelayGroup`). They only ever travel in
+    // **group framing** (header version 2), so they never reach this enum's v1 reader from
+    // the wire — they are here because it is the same type byte, and `RelayGroup.readHeader`
+    // resolves it through the same table.
+    /// Our hello to a server: name, group tag, and who we have ticked.
+    case lobbyHello = 6
+    /// The server's member list for our group.
+    case lobbyRoster = 7
+    /// The server has no room for us.
+    case lobbyFull = 8
+    /// Leaving a server.
+    case lobbyBye = 9
     /// Relay address-proof challenge (upstream 2026-07-27, server-v2.5). The relay sends a
     /// random cookie to every newly seen client address; echoing the packet back verbatim
     /// proves the address really receives, which is what kills the reflection attack. The

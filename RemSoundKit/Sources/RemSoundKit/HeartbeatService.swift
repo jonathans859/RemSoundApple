@@ -34,6 +34,14 @@ public final class HeartbeatService {
     private let timerQueue = DispatchQueue(label: "RemSound.Heartbeat")
     private var sequence: UInt32 = 0
     private let startTime = DispatchTime.now()
+    /// The originator timestamps of our recent pings. A pong only counts when it answers one
+    /// of them — "count a pong only if it answers one of your own recent pings", which stops
+    /// mattering only if nobody else's pongs can reach us. Through a server they can: a
+    /// member's pong is fanned out to the whole group, carrying the clock of whoever pinged,
+    /// so crediting it blindly would compute a round trip from somebody else's clock. One
+    /// ping a second and a 5 s unreachable window, so eight is ample.
+    private var recentPingTicks: [Int64] = []
+    private static let recentPingMemory = 8
 
     public init() {}
 
@@ -106,21 +114,26 @@ public final class HeartbeatService {
         }
         sequence &+= 1
         let seq = sequence
+        let tick = monotonicMs
+        recentPingTicks.append(tick)
+        if recentPingTicks.count > Self.recentPingMemory { recentPingTicks.removeFirst() }
         lock.unlock()
 
         // streamId 0xFFFF marks heartbeats, same as the Windows sender.
         var packet = RemPacket.writeHeader(type: .heartbeat, streamId: 0xFFFF, sequence: seq)
-        packet.append(RemPacket.writeHeartbeatPayload(kind: .ping, originatorTickMs: monotonicMs))
+        packet.append(RemPacket.writeHeartbeatPayload(kind: .ping, originatorTickMs: tick))
         let bytes = [UInt8](packet)
         for target in targets {
             _ = transport(bytes, target)
         }
     }
 
-    /// Feed a heartbeat packet that arrived on the shared audio socket.
-    public func handleInjectedPacket(_ buffer: [UInt8], length: Int, remote: UDPEndpoint) {
-        guard let header = RemPacket.readHeader(buffer, length: length), header.type == .heartbeat else { return }
-        guard let (kind, originatorTickMs) = RemPacket.readHeartbeat(buffer[RemPacket.headerSize..<length]) else { return }
+    /// Feed the payload of a heartbeat that arrived on the shared audio socket. `remote` is
+    /// whoever it is from — the datagram's source for an ordinary heartbeat, or a group
+    /// member's stand-in address for one that came through a server (whose pong therefore
+    /// goes back the same way, wrapped by the group client on its way out).
+    public func handleHeartbeatPayload(_ payload: ArraySlice<UInt8>, remote: UDPEndpoint) {
+        guard let (kind, originatorTickMs) = RemPacket.readHeartbeat(payload) else { return }
 
         if kind == .ping {
             lock.lock()
@@ -140,12 +153,19 @@ public final class HeartbeatService {
         let rtt = Int(max(0, monotonicMs - originatorTickMs))
         let now = Date()
         lock.lock()
+        guard recentPingTicks.contains(originatorTickMs) else {
+            lock.unlock()
+            return // answers somebody else's ping (see recentPingTicks)
+        }
         for (endpoint, state) in peers where endpoint.address == remote.address {
             state.rttEwmaMs = state.rttEwmaMs.map { Int(Double($0) * 0.7 + Double(rtt) * 0.3) } ?? rtt
             state.lastPong = now
         }
         lock.unlock()
     }
+
+    /// Test seam: one round of pings without waiting out the 1 Hz timer.
+    func sendPingsForTesting() { sendPings() }
 
     private final class PeerState {
         var firstPingSent: Date?

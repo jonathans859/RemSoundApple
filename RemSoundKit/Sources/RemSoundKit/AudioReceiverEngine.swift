@@ -50,6 +50,12 @@ public final class AudioReceiverEngine {
     /// sounds like a bad link rather than like an echo. Addresses absent from the map fall
     /// back to standing alone, which is exactly the old behaviour.
     private var peerIdentityByAddress: [UInt32: String] = [:]
+
+    /// Group membership on a RemSound server, when the user has connected to one. It turns a
+    /// group-framed packet into an ordinary one from the member who sent it, and sends what
+    /// we address to a member through the server instead. nil (the default) is the
+    /// pre-groups behaviour exactly.
+    private var relayGroup: RelayGroupClient?
     /// Paths currently refused because another path of the same peer is carrying the lane.
     /// Only here to keep the diagnostic from repeating four times a second — the sender
     /// re-announces its format every 250 ms.
@@ -64,10 +70,18 @@ public final class AudioReceiverEngine {
         startDate.map { Date().timeIntervalSince($0) } ?? 0
     }
 
-    /// Heartbeat packets arriving on the audio socket land here. Wire BEFORE start().
-    public var onHeartbeatReceived: ((_ buffer: [UInt8], _ length: Int, _ remote: UDPEndpoint) -> Void)?
+    /// Heartbeat packets arriving on the audio socket land here, as the payload after the
+    /// header and the peer they came from. A payload rather than the raw datagram because a
+    /// heartbeat relayed through a server arrives group-framed, with 16 bytes of client id
+    /// between the header and the payload, and `remote` is then that member's stand-in
+    /// address rather than the server's. Wire BEFORE start().
+    public var onHeartbeatReceived: ((_ payload: ArraySlice<UInt8>, _ remote: UDPEndpoint) -> Void)?
     /// Fired when a session opens/closes — drives UI refresh and connect/disconnect cues.
     public var onSessionsChanged: (() -> Void)?
+    /// An address-proof challenge arrived from this endpoint (and has just been echoed).
+    /// **Only a server sends one**, which is how the app can tell a user who typed a
+    /// server's address into the add-a-peer box what they have actually got.
+    public var onAddrCheckReceived: ((UDPEndpoint) -> Void)?
     public var onDiagnostic: ((String) -> Void)?
 
     /// Gate equivalent to the Windows "Receive audio" tick: when false the socket stays
@@ -134,6 +148,14 @@ public final class AudioReceiverEngine {
             onDiagnostic?("session closed (sender no longer selected): \(session.endpoint) stream=\(session.streamId)")
         }
         if !toClose.isEmpty { onSessionsChanged?() }
+    }
+
+    /// Hand the engine the server-group client, which from then on sees every packet in and
+    /// out of the audio socket. Set it once, before `start()`.
+    public func setRelayGroup(_ client: RelayGroupClient?) {
+        lock.lock()
+        relayGroup = client
+        lock.unlock()
     }
 
     /// Tell the engine which addresses belong to the same peer (issue #8). The app derives
@@ -236,11 +258,32 @@ public final class AudioReceiverEngine {
         mixer.removeAllSessions()
     }
 
-    /// Send raw bytes from the audio socket — heartbeat transport (single-port model: pings
-    /// and pongs leave from the same socket/NAT pinhole audio arrives on, which is also what
-    /// claims our slot on the v1 pairwise relay).
+    /// Send bytes from the audio socket — heartbeat and microphone transport (single-port
+    /// model: everything leaves from the same socket/NAT pinhole audio arrives on, which is
+    /// also what claims our slot on the server's ordinary pair).
+    ///
+    /// When the user is in a group on a server, the group client gets first refusal: a
+    /// packet addressed to a member goes to the server group-framed instead, and a packet
+    /// addressed to the server goes in both forms where the protocol says it must.
     @discardableResult
     public func sendFromAudioSocket(_ data: [UInt8], to endpoint: UDPEndpoint) -> Bool {
+        lock.lock()
+        let group = relayGroup
+        lock.unlock()
+        if let group,
+           group.route(data, to: endpoint, send: { [weak self] bytes, destination in
+               self?.sendRawFromAudioSocket(bytes, to: destination) ?? false
+           }) {
+            return true
+        }
+        return sendRawFromAudioSocket(data, to: endpoint)
+    }
+
+    /// Straight to the socket, with no group routing. The group client's own packets (its
+    /// hello, its bye) are already framed and must not be wrapped a second time, and an
+    /// address-check echo has to leave exactly as it arrived.
+    @discardableResult
+    public func sendRawFromAudioSocket(_ data: [UInt8], to endpoint: UDPEndpoint) -> Bool {
         let sent = socket?.send(data, to: endpoint) ?? false
         if sent { bytesSent &+= Int64(data.count) }
         return sent
@@ -248,18 +291,45 @@ public final class AudioReceiverEngine {
 
     // MARK: - Packet path (network thread)
 
+    /// What the packet turned out to be, after the group client has had its look.
+    private enum Dispatch {
+        case drop
+        /// `source` is the peer it is from — the datagram's own source for an ordinary
+        /// packet, or the member's stand-in address for one relayed through a server.
+        case packet(header: RemPacket.Header, payloadStart: Int, source: UDPEndpoint)
+    }
+
+    private func dispatch(buffer: [UInt8], length: Int, remote: UDPEndpoint) -> Dispatch {
+        lock.lock()
+        let group = relayGroup
+        lock.unlock()
+        if let group {
+            switch group.handleInbound(buffer, length: length, remote: remote) {
+            case .consumed:
+                return .drop // a roster, a "full", or our own packet coming back
+            case .delivered(let header, let payloadStart, let source):
+                return .packet(header: header, payloadStart: payloadStart, source: source)
+            case .notGroup:
+                break // an ordinary packet, or group framing from somewhere we are not
+            }
+        }
+        guard let header = RemPacket.readHeader(buffer, length: length) else { return .drop }
+        return .packet(header: header, payloadStart: RemPacket.headerSize, source: remote)
+    }
+
     private func handleRawPacket(buffer: [UInt8], length: Int, remote: UDPEndpoint, kernelArrivalNs: UInt64) {
         bytesReceived &+= Int64(length)
-        guard let header = RemPacket.readHeader(buffer, length: length) else { return }
+        guard case .packet(let header, let payloadStart, let source) =
+                dispatch(buffer: buffer, length: length, remote: remote) else { return }
 
         switch header.type {
         case .format:
-            handleFormat(remote: remote, streamId: header.streamId, payload: buffer[RemPacket.headerSize..<length])
+            handleFormat(remote: source, streamId: header.streamId, payload: buffer[payloadStart..<length])
         case .audio:
-            handleAudio(remote: remote, streamId: header.streamId, sequence: header.sequence,
-                        payload: buffer[RemPacket.headerSize..<length], kernelArrivalNs: kernelArrivalNs)
+            handleAudio(remote: source, streamId: header.streamId, sequence: header.sequence,
+                        payload: buffer[payloadStart..<length], kernelArrivalNs: kernelArrivalNs)
         case .heartbeat:
-            onHeartbeatReceived?(buffer, length, remote)
+            onHeartbeatReceived?(buffer[payloadStart..<length], source)
         case .addrCheck:
             // Relay address-proof: echo the packet back to its source, verbatim, from this
             // same socket. Deliberately NOT gated on the allow-list — the challenge comes from
@@ -267,9 +337,20 @@ public final class AudioReceiverEngine {
             // costs us every relayed stream once the relay enforces. Safe to answer blind: the
             // reply is byte-identical to what arrived and goes only to the sender's own address,
             // so it can neither amplify nor be aimed at a third party.
-            sendFromAudioSocket(Array(buffer[0..<length]), to: remote)
+            //
+            // Back to `remote`, the datagram's real source, and raw: the echo proves THIS
+            // address receives, so it must not be dressed up as group traffic (spec: "echo
+            // address checks back exactly as they came, never in group framing"). Receiving
+            // one is also the giveaway that an address is a server — only a server sends them.
+            sendRawFromAudioSocket(Array(buffer[0..<length]), to: remote)
+            onAddrCheckReceived?(remote)
         case .keepAlive, .control:
             break // legacy / not handled in v1 — silently ignored, wire-safe
+        case .lobbyHello, .lobbyRoster, .lobbyFull, .lobbyBye:
+            // Group types, and they only ever arrive group-framed — in which case the group
+            // client above consumed them. One of these in a version-1 header is nothing we
+            // send or any server sends; drop it, wire-safe.
+            break
         }
     }
 

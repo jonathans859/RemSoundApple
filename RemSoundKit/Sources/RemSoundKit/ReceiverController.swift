@@ -533,8 +533,8 @@ public final class ReceiverController {
             Task { @MainActor [weak self] in self?.reclaimTransportControls() }
         }
 
-        engine.onHeartbeatReceived = { [heartbeat] buffer, length, remote in
-            heartbeat.handleInjectedPacket(buffer, length: length, remote: remote)
+        engine.onHeartbeatReceived = { [heartbeat] payload, remote in
+            heartbeat.handleHeartbeatPayload(payload, remote: remote)
         }
         heartbeat.sendTransport = { [engine] data, endpoint in
             engine.sendFromAudioSocket(data, to: endpoint)
