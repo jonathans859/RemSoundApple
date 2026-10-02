@@ -171,7 +171,8 @@ public enum RelayGroup {
     /// counts (49×48 == 48×49).
     public static func readRoster(_ payload: ArraySlice<UInt8>) -> Roster? {
         let p = Array(payload)
-        guard let count = p.first.map(Int.init) else { return nil }
+        guard let first = p.first else { return nil }
+        let count = Int(first)
         let entrySize = p.count >= 1 + count * rosterEntrySize + 1
             ? rosterEntrySize : rosterEntrySizeWithoutFlags
         guard p.count >= 1 + count * entrySize else { return nil }

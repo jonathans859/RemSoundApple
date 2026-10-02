@@ -317,7 +317,9 @@ public final class RelayGroupClient {
         lock.lock()
         if let server = self.server {
             if let groupTag = self.groupTag {
-                if now.timeIntervalSince(lastHello) >= RelayGroup.helloInterval {
+                // Only count a hello as sent if there is something to send it with, or the
+                // first one is lost and the next is two seconds away.
+                if rawTransport != nil, now.timeIntervalSince(lastHello) >= RelayGroup.helloInterval {
                     lastHello = now
                     hello = (RelayGroup.helloPacket(clientId: clientId, name: displayName,
                                                     groupTag: groupTag,

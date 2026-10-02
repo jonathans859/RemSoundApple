@@ -6,18 +6,19 @@ import SwiftUI
 ///
 /// The note at the top is the one thing that surprises people, so it is said plainly and
 /// every time: a server only ever shows you the people using the same password as you.
-public struct ServerConnectView: View {
-    @Bindable private var controller: ReceiverController
+struct ServerConnectView: View {
+    /// Read-only: @Observable tracks the reads in `body`, so no @Bindable is needed.
+    let controller: ReceiverController
     @Environment(\.dismiss) private var dismiss
     @State private var host: String
     @FocusState private var hostFocused: Bool
 
-    public init(controller: ReceiverController) {
+    init(controller: ReceiverController) {
         self.controller = controller
         _host = State(initialValue: controller.serverAddress)
     }
 
-    public var body: some View {
+    var body: some View {
         NavigationStack {
             Form {
                 noteSection

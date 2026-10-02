@@ -86,7 +86,7 @@ public struct PeerListEntry: Identifiable, Hashable, Sendable {
     /// announces, else the best thing there is. Somebody on a server has no address to fall
     /// back on, so it must not be offered one.
     public var fallbackName: String {
-        if let machineName { return machineName }
+        if let machineName = machineName { return machineName }
         switch source {
         case .server: return "the name they give on the server"
         case .serverPair: return "someone on a phone or an older app"
@@ -98,7 +98,9 @@ public struct PeerListEntry: Identifiable, Hashable, Sendable {
     /// server has no address to key on, so their client id is the key — which is also what
     /// makes a tick outlive their restart, and ours.
     var selectionKeys: [String] {
-        if let serverMemberId { return [ReceiverController.serverSelectionKey(hex: serverMemberId)] }
+        if let serverMemberId = serverMemberId {
+            return [ReceiverController.serverSelectionKey(hex: serverMemberId)]
+        }
         var keys = Set(allAddressStrings)
         keys.insert(addressString)
         return Array(keys)
@@ -930,8 +932,8 @@ public final class ReceiverController {
     /// have added as though it were a person — and a server is somewhere you go. Offer it.
     private func noteAddressCheck(from endpoint: UDPEndpoint) {
         guard serverSuggestion == nil, endpoint != serverEndpoint else { return }
-        guard let peer = manualPeers.first(where: {
-            (manualResolved[$0.id] ?? []).contains { $0.address == endpoint.address }
+        guard let peer = manualPeers.first(where: { candidate in
+            (manualResolved[candidate.id] ?? []).contains { $0.address == endpoint.address }
         }) else { return }
         serverSuggestion = peer.host
     }
@@ -2184,10 +2186,10 @@ public final class ReceiverController {
                 lines.append("Machine name: \(entry.machineName ?? "not named on the server yet")")
                 lines.append("Reached through the server at \(serverAddress)")
                 lines.append("Everyone on a server shares its address, so this person has none of their own")
-                switch entry.ticksUs {
-                case true: lines.append("They have ticked you")
-                case false: lines.append("They have not ticked you yet — sound needs both ticks, so there will be none until they do")
-                case nil: break
+                if entry.ticksUs == true {
+                    lines.append("They have ticked you")
+                } else if entry.ticksUs == false {
+                    lines.append("They have not ticked you yet — sound needs both ticks, so there will be none until they do")
                 }
             } else {
                 lines.append("A phone or an older RemSound, paired with you through the server at \(serverAddress)")
