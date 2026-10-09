@@ -529,7 +529,11 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   asked for "proper diagnostics/logging like the RemSound windows client"): recent events
   ALWAYS kept in memory (300, shown newest-first under Diagnostics → Recent events, and in
   the copied report), plus optional log files (`fileLoggingEnabled`, default off, device-local)
-  in Application Support/Logs — upstream's TSV layout: header, `EVT` rows, a `SNAP` counter row
+  in **Documents/Logs** — the app's own Files-app folder on iPhone (`UIFileSharingEnabled` +
+  `LSSupportsOpeningDocumentsInPlace` in Apps/iOS/Info.plist; older builds' files in
+  Application Support/Logs are moved over at launch), Show in Finder on the Mac. "Write log
+  now" (Windows' button) adds a marker line, and with files off saves the recent events to
+  a file of their own; "Copy recent events" copies them. Upstream's TSV layout: header, `EVT` rows, a `SNAP` counter row
   per second from the FUNCTIONAL tick (`writeLogSnapshot`), lazy creation, roll at 10 MB,
   pruned at start to 20 files / 14 days, Share button in Diagnostics. Thread-safe (lock +
   serial file queue), so the services' `onDiagnostic` hooks (engine, microphone, discovery,

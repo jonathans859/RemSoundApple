@@ -81,13 +81,25 @@ private struct LogFilesSection: View {
                 get: { controller.fileLoggingEnabled },
                 set: { controller.fileLoggingEnabled = $0 }
             ))
+            // Windows' button: marks the moment; with log files off it saves the recent events
+            // to a file instead, so there is something to share.
+            Button("Write log now") { controller.writeLogNow() }
             if let file = controller.currentLogFile {
                 ShareLink(item: file) {
                     Label("Share log", systemImage: "square.and.arrow.up")
                 }
             }
+#if os(macOS)
+            Button("Show in Finder") { controller.revealLogsFolder() }
+#endif
         } header: {
             Text("Log files")
+        } footer: {
+#if os(iOS)
+            Text("Files app: On My iPhone → RemSound → Logs.")
+#else
+            EmptyView()
+#endif
         }
     }
 }
@@ -107,6 +119,8 @@ private struct RecentEventsSection: View {
             if controller.recentEvents.isEmpty {
                 Text("Nothing yet.")
                     .foregroundStyle(.secondary)
+            } else {
+                Button("Copy recent events") { controller.copyRecentEvents() }
             }
             // Newest first: the question is almost always "what just happened?".
             ForEach(controller.recentEvents.suffix(Self.shown).reversed()) { entry in

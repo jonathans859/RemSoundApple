@@ -111,6 +111,40 @@ final class EventLogTests: XCTestCase {
         }
     }
 
+    /// "Write log now" with log files off: the recent events land in a file of their own,
+    /// which becomes the one Share offers.
+    func testSavingRecentEventsWritesThemToAShareableFile() throws {
+        let log = makeLog()
+        log.event("first")
+        log.event("second")
+        let file = try XCTUnwrap(log.saveRecentEvents())
+        XCTAssertEqual(file.deletingLastPathComponent().standardizedFileURL,
+                       directory.standardizedFileURL)
+        XCTAssertTrue(file.lastPathComponent.hasSuffix("-events.log"))
+        let lines = try contents(file).split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines.first, EventLog.snapshotHeader)
+        XCTAssertTrue(lines[1].hasSuffix("\tfirst"))
+        XCTAssertTrue(lines[2].hasSuffix("\tsecond"))
+        XCTAssertEqual(log.currentFile, file)
+    }
+
+    /// Logs written by the first builds (Application Support, invisible in Files) move to the
+    /// folder the Files app shows.
+    func testOldLogFilesAreMovedIntoTheFolder() throws {
+        let old = directory.appendingPathComponent("old-location", isDirectory: true)
+        try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
+        let moved = old.appendingPathComponent("RemSound-earlier.log")
+        FileManager.default.createFile(atPath: moved.path, contents: Data("x".utf8))
+
+        let log = makeLog()
+        log.adoptFiles(from: old)
+        log.flushForTesting()
+
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent("RemSound-earlier.log").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path), "the emptied old folder goes")
+    }
+
     func testPruningKeepsOnlyRecentFiles() throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let old = directory.appendingPathComponent("RemSound-old.log")

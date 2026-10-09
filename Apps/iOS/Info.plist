@@ -29,6 +29,13 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- The app's own folder in the Files app ("On My iPhone → RemSound"), where the log
+	     files go (Documents/Logs, see EventLog). Both keys are needed: the first exposes
+	     Documents, the second lets Files open what is in it in place. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>RemSound finds RemSound senders on your network and receives their audio over the local network.</string>
 	<key>NSMicrophoneUsageDescription</key>

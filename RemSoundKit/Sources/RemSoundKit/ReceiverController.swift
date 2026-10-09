@@ -718,6 +718,8 @@ public final class ReceiverController {
         // Every stored property is set from here on, so methods may be called. The gate is set
         // directly, before the first line can be written.
         eventLog.setFileLoggingEnabled(fileLoggingEnabled)
+        // Logs written by the first builds sit where the Files app cannot see them.
+        eventLog.adoptFiles(from: EventLog.legacyDirectory())
         eventLog.prune()
         eventLog.event("\(Self.versionLine) started on \(Self.platformLine)")
 
@@ -2169,13 +2171,11 @@ public final class ReceiverController {
         lines.append("Maximum delay: \(targetLatencyMs) ms")
         lines.append("")
         lines.append(contentsOf: connectionDetails)
-        let events = eventLog.recentEntries.suffix(100)
+        let events = recentEventsText(limit: 100)
         if !events.isEmpty {
-            let clock = DateFormatter()
-            clock.dateFormat = "HH:mm:ss"
             lines.append("")
             lines.append("Recent events")
-            for entry in events { lines.append("\(clock.string(from: entry.date))  \(entry.message)") }
+            lines.append(contentsOf: events)
         }
         return lines.joined(separator: "\n")
     }
@@ -2183,15 +2183,61 @@ public final class ReceiverController {
     /// Put `connectionReport` on the system pasteboard. Announces on iOS because a copy
     /// produces no other feedback a screen-reader user can perceive.
     public func copyConnectionReport() {
-        let text = connectionReport
+        copyToPasteboard(connectionReport)
+        announce("Connection details copied")
+    }
+
+    private func copyToPasteboard(_ text: String) {
 #if os(iOS)
         UIPasteboard.general.string = text
 #elseif os(macOS)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
 #endif
-        announce("Connection details copied")
     }
+
+    /// The recent events as plain lines, oldest first — "time  message".
+    private func recentEventsText(limit: Int = EventLog.memoryDepth) -> [String] {
+        let clock = DateFormatter()
+        clock.dateFormat = "HH:mm:ss"
+        return eventLog.recentEntries.suffix(limit).map { "\(clock.string(from: $0.date))  \($0.message)" }
+    }
+
+    /// Copy every recent event, oldest first.
+    public func copyRecentEvents() {
+        copyToPasteboard((["RemSound recent events", Self.versionLine, ""] + recentEventsText())
+            .joined(separator: "\n"))
+        announce("Recent events copied")
+    }
+
+    /// The folder log files go in (Files app → RemSound → Logs on iPhone).
+    public var logsFolder: URL { eventLog.folder }
+
+    /// Windows' "Write logs now": a marker line, so the moment something went wrong can be
+    /// found afterwards. Upstream's writes nothing while logs are off, which is exactly when
+    /// someone presses it; here, with log files off, the recent events are saved to a file of
+    /// their own instead, ready to share (user, 2026-10-09).
+    public func writeLogNow() {
+        eventLog.event("marked by you: write log now")
+        if !fileLoggingEnabled, let file = eventLog.saveRecentEvents() {
+            currentLogFile = file
+            eventLog.event("recent events saved to \(file.lastPathComponent)")
+        }
+        announce("Log written")
+    }
+
+#if os(macOS)
+    /// Open the logs folder in Finder — inside the sandbox container, where nobody would find
+    /// it by hand.
+    public func revealLogsFolder() {
+        try? FileManager.default.createDirectory(at: logsFolder, withIntermediateDirectories: true)
+        if let file = currentLogFile {
+            NSWorkspace.shared.activateFileViewerSelecting([file])
+        } else {
+            NSWorkspace.shared.open(logsFolder)
+        }
+    }
+#endif
 
     /// Take one point of the sliding minute of packet counters. Called from the functional
     /// half of the refresh tick — see the note at the call site.

@@ -8,7 +8,9 @@ import Foundation
 /// - **Recent events, always on, in memory** (the last `memoryDepth`). What the Diagnostics
 ///   screen lists and the copied report carries. Always on because the question "why did that
 ///   not happen?" is asked right after it did not happen — too late to switch a log on.
-/// - **Log files, off by default** (as upstream's), in Application Support/Logs. Upstream's
+/// - **Log files, off by default** (as upstream's), in Documents/Logs — the app's own folder
+///   in the Files app on iPhone ("On My iPhone → RemSound → Logs", `UIFileSharingEnabled`),
+///   the sandbox container's Documents on the Mac (Diagnostics has Show in Finder). Upstream's
 ///   tab-separated layout: a header row, `EVT` rows for events, and while the app runs a `SNAP`
 ///   row of counters once a second. Created lazily on the first write while enabled — switching
 ///   it on costs nothing until something happens — rolled to a fresh file at `rollAfterBytes`
@@ -66,11 +68,71 @@ public final class EventLog: @unchecked Sendable {
         self.rollAfterBytes = rollAfterBytes
     }
 
-    /// Application Support/Logs — inside the sandbox container on macOS, so no entitlement.
+    /// Documents/Logs. On iPhone, Documents is what the Files app shows as the app's own folder
+    /// (with `UIFileSharingEnabled` + `LSSupportsOpeningDocumentsInPlace` in Info.plist) — the
+    /// "make a folder for itself like Firefox" the user asked for, 2026-10-09. On the Mac it is
+    /// inside the sandbox container, so no entitlement either way.
     public static func defaultDirectory() -> URL {
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("Logs", isDirectory: true)
+    }
+
+    /// Where the first builds with log files put them (Application Support/Logs, invisible in
+    /// Files). `adoptFiles(from:)` moves them over once.
+    public static func legacyDirectory() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base.appendingPathComponent("Logs", isDirectory: true)
+    }
+
+    /// The folder the log files go in.
+    public var folder: URL { directory }
+
+    /// Move log files from an older location into this log's folder, then remove the old
+    /// folder if it is empty. Best-effort; nothing happens if there is nothing there.
+    public func adoptFiles(from oldDirectory: URL) {
+        queue.async { [self] in
+            let manager = FileManager.default
+            guard oldDirectory != directory,
+                  let files = try? manager.contentsOfDirectory(at: oldDirectory, includingPropertiesForKeys: nil)
+            else { return }
+            let logs = files.filter { $0.pathExtension == "log" }
+            if !logs.isEmpty {
+                try? manager.createDirectory(at: directory, withIntermediateDirectories: true)
+            }
+            for file in logs {
+                try? manager.moveItem(at: file, to: directory.appendingPathComponent(file.lastPathComponent))
+            }
+            if (try? manager.contentsOfDirectory(atPath: oldDirectory.path))?.isEmpty == true {
+                try? manager.removeItem(at: oldDirectory)
+            }
+        }
+    }
+
+    /// Write the recent events to a file of their own, now — "Write log now" while log files
+    /// are off, so there is something to share without having had them on beforehand. Same
+    /// layout as a log file. Returns the file, or nil if it could not be written.
+    public func saveRecentEvents() -> URL? {
+        let entries = recentEntries
+        return queue.sync { () -> URL? in
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let stamp = Self.fileStamp.string(from: Date())
+                let url = directory.appendingPathComponent(
+                    "RemSound-\(Self.fileSafe(deviceName))-\(stamp)-events.log")
+                var text = Self.snapshotHeader + "\n"
+                for entry in entries {
+                    text += "EVT\t\(timestamps.string(from: entry.date))\t\(entry.message)\n"
+                }
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                // The file Share offers, until a real log file takes over.
+                fileURL = url
+                return url
+            } catch {
+                return nil
+            }
+        }
     }
 
     // MARK: - Writing
