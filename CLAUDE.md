@@ -236,7 +236,13 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   halves and they cannot disagree. A new password is a new group, so the password didSet drops
   those keys — and `applyProfile` sets `applyingProfile` to stop that eating the ticks it has
   just restored. `relayClientId` is device-local: never in a profile, never in iCloud (two
-  devices sharing one id would be ONE person to every server).
+  devices sharing one id would be ONE person to every server), and **never in UserDefaults**:
+  it lives in a `…ThisDeviceOnly` Keychain item (data-protection keychain on macOS too,
+  `Keychain.writeDeviceOnly`), because UserDefaults travel in backups and a restore onto a
+  second device made both one person (upstream #10, fixed 2026-10-09). An old UserDefaults
+  id is moved over unchanged; if the Keychain write fails it stays in UserDefaults rather
+  than becoming a new id each launch. `DeviceOnlyStore` is injectable so CI never touches
+  the real Keychain.
   **Everybody on the server shares ONE outgoing datagram** — `updateSendTargets` collapses
   every server row to the server endpoint, because the server makes the copies; a copy per
   person would also have it fan out each of them. Heartbeats go to the server for as long as

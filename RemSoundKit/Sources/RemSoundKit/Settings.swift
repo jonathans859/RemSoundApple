@@ -25,9 +25,17 @@ public struct ManualPeer: Identifiable, Hashable, Codable, Sendable {
 public final class ReceiverSettings {
     private let defaults: UserDefaults
     private let keychainAccount = "profile-password"
+    private let deviceOnly: DeviceOnlyStore
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.deviceOnly = KeychainDeviceOnlyStore()
+    }
+
+    /// Tests: a store that is not the real Keychain (CI has no signed keychain to write to).
+    init(defaults: UserDefaults, deviceOnly: DeviceOnlyStore) {
+        self.defaults = defaults
+        self.deviceOnly = deviceOnly
     }
 
     public var manualPeers: [ManualPeer] {
@@ -259,14 +267,29 @@ public final class ReceiverSettings {
     /// ticks, and the server would route one person's audio to whichever had spoken last.
     /// A stored value that cannot be read back (absent, or the all-zero id the server uses
     /// for itself) is replaced, not patched up.
+    ///
+    /// Kept in a **this-device-only** Keychain item (2026-10-09, upstream issue #10: "a
+    /// keychain item marked this device only is the kind of storage that stays put"). It used
+    /// to be in UserDefaults, which travels in backups: restore one onto a new iPhone while
+    /// the old one is still in use and both became the same person on every server. An id
+    /// already in UserDefaults is moved over once, so ticks other people placed on us
+    /// survive the update; if the Keychain cannot be written, it stays where it was rather
+    /// than becoming a new id every launch.
     public func relayClientId() -> RelayClientId {
-        if let hex = defaults.string(forKey: "relayClientId"), let id = RelayClientId(hex: hex) {
+        if let hex = deviceOnly.read(Self.clientIdAccount), let id = RelayClientId(hex: hex) {
             return id
         }
-        let id = RelayClientId.random()
-        defaults.set(id.hex, forKey: "relayClientId")
+        let legacy = defaults.string(forKey: "relayClientId").flatMap(RelayClientId.init(hex:))
+        let id = legacy ?? RelayClientId.random()
+        if deviceOnly.write(id.hex, Self.clientIdAccount) {
+            defaults.removeObject(forKey: "relayClientId")
+        } else {
+            defaults.set(id.hex, forKey: "relayClientId")
+        }
         return id
     }
+
+    static let clientIdAccount = "relay-client-id"
 
     /// The server address the user typed, exactly as typed (a hostname, a MagicDNS name or a
     /// dotted quad). Empty means they have never used one.
@@ -331,8 +354,61 @@ public final class ReceiverSettings {
 /// explicit user deletion may call `delete`. Writing an empty value stores an empty item;
 /// it deliberately does NOT remove anything (issue #4: a device whose live password was
 /// blank could wipe a profile's password for every other device just by saving).
+/// Somewhere a value stays on this one device: not synced, not restored from a backup onto
+/// another device. The Keychain in the app; a dictionary in tests.
+protocol DeviceOnlyStore {
+    func read(_ account: String) -> String?
+    /// False when it could not be stored.
+    func write(_ value: String, _ account: String) -> Bool
+}
+
+struct KeychainDeviceOnlyStore: DeviceOnlyStore {
+    func read(_ account: String) -> String? { Keychain.readDeviceOnly(account: account) }
+    func write(_ value: String, _ account: String) -> Bool {
+        Keychain.writeDeviceOnly(value, account: account)
+    }
+}
+
 enum Keychain {
     private static let service = "com.jonathan859.remsound"
+
+    /// A this-device-only item: `…ThisDeviceOnly` accessibility, never synchronizable, and in
+    /// the data-protection keychain on macOS too — the legacy file keychain ignores the
+    /// accessibility class, so there Migration Assistant would carry it to a new Mac. Its own
+    /// account names, so it never meets the two flavours above.
+    private static func deviceOnlyQuery(account: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
+            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
+        ]
+    }
+
+    static func readDeviceOnly(account: String) -> String? {
+        var query = deviceOnlyQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    static func writeDeviceOnly(_ value: String, account: String) -> Bool {
+        let query = deviceOnlyQuery(account: account)
+        let data = Data(value.utf8)
+        let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecSuccess { return true }
+        guard status == errSecItemNotFound else { return false }
+        var add = query
+        add[kSecValueData as String] = data
+        // After first unlock, so a receiver brought up after a reboot can still read it.
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+    }
 
     /// The attributes identifying one item — one of the two flavours, never "either":
     /// a lookup that spans both would leave it undefined which copy wins.

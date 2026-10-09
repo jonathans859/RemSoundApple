@@ -74,23 +74,68 @@ final class SettingsDefaultsTests: XCTestCase {
         XCTAssertEqual(ReceiverSettings(defaults: defaults).acceptPeerConnections, .prompt)
     }
 
+    // MARK: - Server client id (this device only)
+
+    /// Stands in for the Keychain, which CI cannot write to.
+    private final class MemoryStore: DeviceOnlyStore {
+        var values: [String: String] = [:]
+        var failsToWrite = false
+        func read(_ account: String) -> String? { values[account] }
+        func write(_ value: String, _ account: String) -> Bool {
+            guard !failsToWrite else { return false }
+            values[account] = value
+            return true
+        }
+    }
+
+    private func settings(_ store: MemoryStore) -> ReceiverSettings {
+        ReceiverSettings(defaults: defaults, deviceOnly: store)
+    }
+
     func testRelayClientIdIsGeneratedOnceAndKept() {
-        let first = ReceiverSettings(defaults: defaults).relayClientId()
+        let store = MemoryStore()
+        let first = settings(store).relayClientId()
         XCTAssertFalse(first.isZero, "all zero is the server's own id, never a client's")
-        XCTAssertEqual(ReceiverSettings(defaults: defaults).relayClientId(), first)
-        XCTAssertEqual(defaults.string(forKey: "relayClientId"), first.hex)
+        XCTAssertEqual(settings(store).relayClientId(), first)
+        XCTAssertEqual(store.values[ReceiverSettings.clientIdAccount], first.hex)
+        // Not in UserDefaults: those travel in backups, and a backup restored onto a second
+        // device would make the two of them one person on every server (upstream issue #10).
+        XCTAssertNil(defaults.string(forKey: "relayClientId"))
     }
 
     /// A stored id that cannot be read back — truncated, not hex, or the all-zero id the
     /// server uses for itself — is replaced rather than patched up or used as-is.
     func testUnusableStoredRelayClientIdIsReplaced() {
         for stored in ["", "zzzz", String(repeating: "0", count: 32), "abcd"] {
-            defaults.set(stored, forKey: "relayClientId")
-            let id = ReceiverSettings(defaults: defaults).relayClientId()
+            let store = MemoryStore()
+            store.values[ReceiverSettings.clientIdAccount] = stored
+            let id = settings(store).relayClientId()
             XCTAssertFalse(id.isZero)
             XCTAssertEqual(id.hex.count, 32)
-            XCTAssertEqual(defaults.string(forKey: "relayClientId"), id.hex)
+            XCTAssertEqual(store.values[ReceiverSettings.clientIdAccount], id.hex)
         }
+    }
+
+    /// An existing install keeps its id — other people's ticks on it survive the update —
+    /// and it leaves UserDefaults for the device-only store.
+    func testAnExistingIdMovesOutOfUserDefaultsUnchanged() {
+        let existing = RelayClientId.random()
+        defaults.set(existing.hex, forKey: "relayClientId")
+        let store = MemoryStore()
+
+        XCTAssertEqual(settings(store).relayClientId(), existing)
+        XCTAssertEqual(store.values[ReceiverSettings.clientIdAccount], existing.hex)
+        XCTAssertNil(defaults.string(forKey: "relayClientId"))
+    }
+
+    /// If the Keychain cannot be written, the id must still be the same next launch — a new
+    /// id every launch would lose every tick on every restart.
+    func testAnUnwritableStoreStillKeepsOneId() {
+        let store = MemoryStore()
+        store.failsToWrite = true
+        let first = settings(store).relayClientId()
+        XCTAssertEqual(settings(store).relayClientId(), first)
+        XCTAssertEqual(defaults.string(forKey: "relayClientId"), first.hex)
     }
 
     /// A server is somewhere you go: the app must not go anywhere on a fresh install.
