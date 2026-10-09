@@ -1092,6 +1092,7 @@ public final class ReceiverController {
         isConnectedToServer = false
         isInServerGroup = false
         serverEndpoint = nil
+        serverJoinStartedAt = nil
         relayGroup.disconnect()
         applyPeerSelection()
         updateServerStatus()
@@ -1164,6 +1165,8 @@ public final class ReceiverController {
                 self.knownServerAddresses.insert(endpoint.address)
                 // Before the hello: the server's address check answers it.
                 self.pushAddressCheckEchoTargets()
+                self.serverJoinStartedAt = Date()
+                self.serverSilenceLogged = false
                 self.relayGroup.setIdentity(name: Self.deviceName(),
                                             passwordFingerprint: self.currentFingerprint)
                 self.relayGroup.connect(to: endpoint)
@@ -1183,8 +1186,19 @@ public final class ReceiverController {
         refreshNow()
     }
 
+    /// When we last started waiting for a member list — set as the hello goes out, cleared
+    /// on leaving. Drives the "isn't answering" line.
+    private var serverJoinStartedAt: Date?
+    private var serverSilenceLogged = false
+    private static let serverSilenceLimit: TimeInterval = 10
+
     private func updateServerStatus() {
         let joined = relayGroup.isInGroup
+        // In a group: the next silence starts its own ten seconds from now.
+        if joined {
+            serverJoinStartedAt = Date()
+            serverSilenceLogged = false
+        }
         if isInServerGroup != joined { isInServerGroup = joined }
 
         let text: String
@@ -1199,7 +1213,19 @@ public final class ReceiverController {
             // thing we could show here.
             text = "On \(serverAddress). Set a password to join a group."
         } else if !joined {
-            text = "On \(serverAddress). Waiting for members…"
+            // Windows parity: after about ten seconds with no member list, say so rather than
+            // "waiting" for ever — a wrong address, a stopped server or a blocked port all
+            // look exactly like a slow one otherwise.
+            if let started = serverJoinStartedAt,
+               Date().timeIntervalSince(started) >= Self.serverSilenceLimit {
+                text = "\(serverAddress) isn't answering. Check the address, and that the server is running."
+                if !serverSilenceLogged {
+                    serverSilenceLogged = true
+                    eventLog.event("server: \(serverAddress) has sent no member list for \(Int(Self.serverSilenceLimit)) seconds")
+                }
+            } else {
+                text = "On \(serverAddress). Waiting for members…"
+            }
         } else {
             let others = relayGroup.members.count
             var sentence = others == 0
@@ -2572,6 +2598,16 @@ public final class ReceiverController {
     private func refreshPeerList() {
         var entries: [PeerListEntry] = []
         var seenAddresses: Set<String> = []
+        let discovered = discovery.currentPeers
+        // Names two different devices announce at once — two iPhones both still called
+        // "iPhone". Counted per route: a machine on your network AND on the server under one
+        // name is one machine (see "same machine twice" below), not a clash.
+        let sharedOnNetwork = PeerNameBook.sharedNames(discovered.map {
+            PeerNameBook.machineName(announced: $0.name, addressString: $0.addressString)
+        })
+        let sharedOnServer = PeerNameBook.sharedNames(relayGroup.members.map {
+            $0.name.isEmpty ? nil : $0.name
+        })
 
         // People on a server, first, because the manual loop below merges a row away when
         // one of these already covers its address. Nobody is ever typed in as one of these:
@@ -2582,10 +2618,13 @@ public final class ReceiverController {
                 let announced = member.name.isEmpty ? nil : member.name
                 // Keyed on the announced name, like every other row, so one rename covers
                 // the same machine whether it is reached over the network or through a
-                // server; the client id is the key for a member nobody has named yet.
-                let key = PeerNameBook.identityKey(machineName: announced,
-                                                   fallback: "server-\(member.id.hex)")
-                let custom = peerNames.name(for: key)
+                // server; on their client id when another member shares that name, or
+                // when they have announced none.
+                let (key, custom) = peerNames.resolve(
+                    machineName: announced,
+                    nameIsShared: PeerNameBook.isShared(announced, in: sharedOnServer),
+                    deviceKeys: [PeerNameBook.deviceKey("server-\(member.id.hex)")],
+                    fallback: "server-\(member.id.hex)")
                 let selected = selectedAddresses.contains(Self.serverSelectionKey(hex: member.id.hex))
                 entries.append(PeerListEntry(
                     id: "s-\(member.id.hex)",
@@ -2636,11 +2675,16 @@ public final class ReceiverController {
             }
         }
 
-        for peer in discovery.currentPeers {
+        for peer in discovered {
             let selected = peer.addressStrings.contains { selectedAddresses.contains($0) }
             let machine = PeerNameBook.machineName(announced: peer.name, addressString: peer.addressString)
-            let key = PeerNameBook.identityKey(machineName: machine, fallback: peer.addressString)
-            let custom = peerNames.name(for: key)
+            // The discovery instance id would be the device itself, but it is new every
+            // launch (here and on Windows) — so a device sharing its name is held by address.
+            let (key, custom) = peerNames.resolve(
+                machineName: machine,
+                nameIsShared: PeerNameBook.isShared(machine, in: sharedOnNetwork),
+                deviceKeys: peer.addressStrings.map(PeerNameBook.deviceKey),
+                fallback: peer.addressString)
             entries.append(PeerListEntry(
                 id: "d-\(peer.instanceId)", // instanceId, NOT address — stable across path changes
                 name: custom ?? peer.name,
@@ -2702,7 +2746,31 @@ public final class ReceiverController {
                 statusText: statusText(addresses: resolved.map(\.address), selected: selected)))
         }
 
+        markSameMachineTwice(&entries)
         if entries != peers { peers = entries }
+    }
+
+    /// The same machine reached two ways at once — ticked on your network AND through the
+    /// server — carries the same sound twice under one name. Windows says so on both rows
+    /// (2026-09-21, after Ed found ED_DT in his list twice); matched the same way, by the
+    /// name shown, among ticked rows, where it costs anything.
+    private func markSameMachineTwice(_ entries: inout [PeerListEntry]) {
+        var routes: [String: (network: Bool, server: Bool)] = [:]
+        for entry in entries where entry.isSelected {
+            let key = entry.name.lowercased()
+            var seen = routes[key] ?? (false, false)
+            if entry.isOnServer { seen.server = true } else { seen.network = true }
+            routes[key] = seen
+        }
+        for index in entries.indices where entries[index].isSelected {
+            guard let seen = routes[entries[index].name.lowercased()], seen.network, seen.server
+            else { continue }
+            let note = entries[index].isOnServer
+                ? "same machine twice, also connected on your network"
+                : "same machine twice, also connected through the server"
+            let status = entries[index].statusText
+            entries[index].statusText = status.isEmpty ? note : "\(status), \(note)"
+        }
     }
 
     /// `ticksUs` applies only to somebody on a server, where the member list is the one

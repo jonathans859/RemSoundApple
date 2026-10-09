@@ -38,6 +38,43 @@ public struct PeerNameBook: Equatable, Sendable {
         machineName ?? fallback
     }
 
+    /// The key for ONE device whose announced name another device also announces — its own
+    /// address, or for somebody on a server their client id ("server-<hex>"), which survives
+    /// their restarts. Never the shared name: two iPhones both still called "iPhone" are two
+    /// devices (upstream issue #10; Windows remembers such a device by its address too).
+    public static func deviceKey(_ identity: String) -> String { "device:\(identity)" }
+
+    /// Which stored name applies to a peer, and the key a rename of it should be stored under.
+    ///
+    /// - `deviceKeys`: the device's own keys (`deviceKey(…)` for each of its addresses, or
+    ///   for its server client id). A name stored against the device itself always wins.
+    /// - `nameIsShared`: another device is announcing the same machine name right now. Then
+    ///   a name stored against that machine name belongs to neither of them, and a rename is
+    ///   stored against this device instead.
+    /// - Otherwise the machine name, exactly as before — which is what lets a name follow a
+    ///   machine across a DHCP lease or from the LAN to Tailscale. A peer that announces no
+    ///   name at all keeps its `fallback` (the address or typed host).
+    public func resolve(machineName: String?, nameIsShared: Bool, deviceKeys: [String],
+                        fallback: String) -> (key: String, name: String?) {
+        for key in deviceKeys {
+            if let found = name(for: key) { return (key, found) }
+        }
+        guard let machineName else { return (fallback, name(for: fallback)) }
+        if nameIsShared { return (deviceKeys.first ?? fallback, nil) }
+        return (machineName, name(for: machineName))
+    }
+
+    /// Machine names announced by more than one device, normalised — feeds `nameIsShared`.
+    public static func sharedNames(_ names: [String?]) -> Set<String> {
+        var counts: [String: Int] = [:]
+        for name in names.compactMap({ $0 }) { counts[normalise(name), default: 0] += 1 }
+        return Set(counts.filter { $0.value > 1 }.keys)
+    }
+
+    public static func isShared(_ machineName: String?, in shared: Set<String>) -> Bool {
+        machineName.map { shared.contains(normalise($0)) } ?? false
+    }
+
     public func name(for key: String) -> String? {
         let value = names[Self.normalise(key)]
         return (value?.isEmpty ?? true) ? nil : value

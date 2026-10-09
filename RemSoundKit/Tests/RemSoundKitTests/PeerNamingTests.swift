@@ -66,4 +66,57 @@ final class PeerNamingTests: XCTestCase {
         let reloaded = PeerNameBook(ReceiverSettings(defaults: defaults).peerNames)
         XCTAssertEqual(reloaded.name(for: "ANDRE-PC"), "Andre's desktop")
     }
+
+    // MARK: - Two devices, one name (upstream issue #10)
+
+    private let mumsAddress = "192.168.1.20"
+    private let kidsAddress = "192.168.1.21"
+
+    private func resolve(_ book: PeerNameBook, address: String, shared: Bool) -> (key: String, name: String?) {
+        book.resolve(machineName: "iPhone", nameIsShared: shared,
+                     deviceKeys: [PeerNameBook.deviceKey(address)], fallback: address)
+    }
+
+    /// Two iPhones both still called "iPhone": renaming one must not rename the other.
+    func testRenamingOneOfTwoSameNamedDevicesLeavesTheOtherAlone() {
+        var book = PeerNameBook()
+        let mum = resolve(book, address: mumsAddress, shared: true)
+        book.set("Mum's phone", for: mum.key)
+
+        XCTAssertEqual(resolve(book, address: mumsAddress, shared: true).name, "Mum's phone")
+        XCTAssertNil(resolve(book, address: kidsAddress, shared: true).name)
+    }
+
+    /// A name given while the machine name was unique still follows the machine to another
+    /// address — the reason names were keyed on the machine name in the first place.
+    func testAUniqueNameStillFollowsTheMachine() {
+        var book = PeerNameBook()
+        book.set("Mum's phone", for: resolve(book, address: mumsAddress, shared: false).key)
+        XCTAssertEqual(resolve(book, address: "100.64.0.7", shared: false).name, "Mum's phone")
+    }
+
+    /// While a second device announces the same name, a name stored against that shared name
+    /// belongs to neither of them — the bug was it showing on both.
+    func testANameForTheSharedMachineNameAppliesToNeitherWhileItIsShared() {
+        var book = PeerNameBook()
+        book.set("Mum's phone", for: "iPhone")
+        XCTAssertNil(resolve(book, address: mumsAddress, shared: true).name)
+        XCTAssertNil(resolve(book, address: kidsAddress, shared: true).name)
+        XCTAssertEqual(resolve(book, address: mumsAddress, shared: false).name, "Mum's phone",
+                       "and comes back once the name is unique again")
+    }
+
+    /// A device renamed while it shared its name keeps that name when the other one leaves.
+    func testADeviceNamedWhileSharedKeepsItsNameAfterwards() {
+        var book = PeerNameBook()
+        book.set("Mum's phone", for: resolve(book, address: mumsAddress, shared: true).key)
+        XCTAssertEqual(resolve(book, address: mumsAddress, shared: false).name, "Mum's phone")
+    }
+
+    func testSharedNamesAreCountedCaseInsensitivelyAndIgnoreTheUnnamed() {
+        let shared = PeerNameBook.sharedNames(["iPhone", "IPHONE", "Studio PC", nil, nil])
+        XCTAssertTrue(PeerNameBook.isShared("iphone", in: shared))
+        XCTAssertFalse(PeerNameBook.isShared("Studio PC", in: shared))
+        XCTAssertFalse(PeerNameBook.isShared(nil, in: shared))
+    }
 }

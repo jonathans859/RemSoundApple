@@ -252,6 +252,10 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   address so a user who had already added the server as a peer sees one row with one tick, not
   the same thing twice. An address typed into add-a-peer that answers an address check is a
   server — the app offers to go there as one (`serverSuggestion`).
+  The server line says "<server> isn't answering" after 10 s with no member list
+  (`serverSilenceLimit`, Windows parity) instead of waiting for ever. A machine ticked both on
+  the network and through the server says "same machine twice, also connected …" on both
+  rows (`markSameMachineTwice`, matched by shown name like Windows).
   Why the server list is empty always has a reason on screen (no password to be grouped by, no
   member list yet, nobody else on your password), and a member who has not ticked us back says
   so rather than going quiet — that is the only thing a person cannot work out alone.
@@ -308,6 +312,13 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   address. Device-local and shared by every profile, exactly like the Windows named-peers
   book: a rename is NOT part of a profile, does not sync, and applying a profile never
   changes what a peer is called here. Blank name = clear, like upstream's Clear button.
+  **Two devices announcing one name** (two phones still called "iPhone", upstream #10,
+  2026-10-09): `PeerNameBook.resolve` keys such a device by ITSELF — `deviceKey(address)`, or
+  `deviceKey("server-<hex>")` for a server member — and a name stored against the shared
+  machine name applies to neither while the clash lasts; a name stored against the device
+  always wins. Not the discovery instance id: it is new every launch here and on Windows.
+  Shared-ness is counted per route (network rows among themselves, server members among
+  themselves), because one name on the network AND on the server is one machine.
   Pinned by `PeerNamingTests`.
 - **Continuous latency auto-tune** (2026-08-17, opt-in, default off like upstream's):
   `LatencyAutoTune.swift` is a port of the Windows `MainForm.TickRoute` — every 5 s it
