@@ -513,6 +513,10 @@ public final class ReceiverController {
     private let heartbeat = HeartbeatService()
     private let cues = CuePlayer()
     private let remoteControls = RemoteTransportControls()
+#if os(iOS)
+    /// Connection requests as lock-screen notifications while the app is not on screen.
+    private let requestNotifier = ConnectionRequestNotifier()
+#endif
     private let sendEngine = AudioSendEngine()
     private let microphone = MicrophoneCapture()
     /// Being one of several people on a server. Dormant until `connectToServer` — a server
@@ -680,6 +684,17 @@ public final class ReceiverController {
         // handlers here just says what they do.
         remoteControls.onPlay = { [weak self] in self?.setReceiveFromTransport(true) }
         remoteControls.onPause = { [weak self] in self?.setReceiveFromTransport(false) }
+#if os(iOS)
+        // Before anything can be answered: an action tapped while the app was not running is
+        // delivered to whoever is the notification delegate when it starts.
+        requestNotifier.install()
+        requestNotifier.onAnswer = { [weak self] id, allow in
+            // Only if it is still the question on screen — an old notification for somebody
+            // already answered in the app must not answer the next person's request.
+            guard let self, self.pendingConnectionRequest?.id == id else { return }
+            self.answerConnectionRequest(allow: allow)
+        }
+#endif
         remoteControls.onToggle = { [weak self] in
             guard let self else { return }
             self.setReceiveFromTransport(!self.receiveEnabled)
@@ -1294,13 +1309,23 @@ public final class ReceiverController {
             }
             pendingConnectionRequest = ConnectionRequest(id: key, question: question)
             onConnectionRequestPending?()
+#if os(iOS)
+            // On screen, the in-app alert asks; off screen — where this app spends its life —
+            // a notification does, with the answer buttons on it.
+            if !uiVisible { requestNotifier.post(id: key, question: question) }
+#endif
         }
     }
 
     /// The user's answer to `pendingConnectionRequest`. Either way they are not asked about
     /// this person again this run — a "no" is remembered the same as a "yes".
     public func answerConnectionRequest(allow: Bool) {
-        guard pendingConnectionRequest != nil else { return }
+        guard let request = pendingConnectionRequest else { return }
+#if os(iOS)
+        requestNotifier.withdraw(id: request.id)
+#else
+        _ = request
+#endif
         let acceptance = pendingAcceptance
         pendingConnectionRequest = nil
         pendingAcceptance = nil
@@ -1627,6 +1652,12 @@ public final class ReceiverController {
     /// invisible the 1 Hz tick runs only its functional half; on becoming visible we run one
     /// immediate full refresh so the UI is never stale.
     public func setUIVisible(_ visible: Bool) {
+#if os(iOS)
+        // The notification permission prompt only shows to a foreground app, and the first
+        // connection request usually arrives with the phone locked — so ask on screen, and
+        // only while Accept connections is set to ask.
+        if visible, acceptPeerConnections == .prompt { requestNotifier.requestPermissionIfUndecided() }
+#endif
         guard uiVisible != visible else { return }
         uiVisible = visible
         if visible { refreshNow() }

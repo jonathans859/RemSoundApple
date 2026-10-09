@@ -255,6 +255,16 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   until the phones sent tick proofs). One question
   at a time (`pendingConnectionRequest`, an alert hosted in its own view so the 1 Hz re-render
   cannot rebuild it); the macOS app opens its window for it via `onConnectionRequestPending`.
+  **iOS: also a notification while off screen** (user, 2026-10-09, `ConnectionRequestNotifier`):
+  posted only when `!uiVisible`, identified by the request id, with Allow
+  (`.authenticationRequired` — a tick reaches your microphone, so a locked phone in somebody
+  else's hand must not grant it) and Don't Allow; answered only if that id is still the
+  pending one; withdrawn when answered in the app; the foreground presents no banner (the
+  alert is already asking). The delegate is installed in `ReceiverController.init` —
+  responses to a tap made while the app was not running go to whoever is delegate at launch.
+  Permission is asked on the first FOREGROUND with Accept on "ask" (iOS shows the prompt only
+  to a foreground app). No time-sensitive level: it needs an entitlement + App ID capability
+  the cloud-signed builds lack.
   `PeerAcceptPolicy` (pure, `PeerAcceptTests`) holds upstream's two hard-won rules: **asked
   once per person per run**, yes or no; and a **deliberate untick sticks for the run** —
   with automatic on, unticking somebody who still has us ticked leaves their audio arriving,
