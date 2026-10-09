@@ -13,12 +13,12 @@ public enum PeerAcceptMode: Int, CaseIterable, Identifiable, Sendable {
 
     public var id: Int { rawValue }
 
-    /// Upstream's own wording for the three rows of its list.
+    /// Upstream's three rows, shortened (user, 2026-10-09: less verbose).
     public var displayName: String {
         switch self {
-        case .prompt: return "Ask me each time"
-        case .automatic: return "Automatically — connect when someone ticks me"
-        case .manual: return "Manual — I tick them myself"
+        case .prompt: return "Ask each time"
+        case .automatic: return "Automatically"
+        case .manual: return "Manually"
         }
     }
 }

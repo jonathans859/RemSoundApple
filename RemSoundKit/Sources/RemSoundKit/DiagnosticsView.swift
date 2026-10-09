@@ -20,7 +20,7 @@ struct DiagnosticsView: View {
             Form {
                 if controller.diagnosticDetails.isEmpty {
                     Section {
-                        Text("No measurements yet. These appear once audio is playing.")
+                        Text("No measurements yet.")
                             .foregroundStyle(.secondary)
                     }
                 } else {
@@ -31,9 +31,7 @@ struct DiagnosticsView: View {
                                 .accessibilityAddTraits(.updatesFrequently)
                         }
                     } header: {
-                        Text("Measurements")
-                    } footer: {
-                        Text("Everything here covers the last minute and refreshes every second.")
+                        Text("Last minute")
                     }
                 }
 
@@ -48,7 +46,6 @@ struct DiagnosticsView: View {
                             copied = false
                         }
                     }
-                    .accessibilityHint("Copies the connection status from the previous screen and all of these measurements as text")
                 }
             }
             .formStyle(.grouped)

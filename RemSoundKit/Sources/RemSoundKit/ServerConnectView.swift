@@ -4,8 +4,8 @@ import SwiftUI
 /// leave the one you are on. A server is somewhere you go, not a peer you add, so it gets a
 /// screen of its own rather than a row in the peer list.
 ///
-/// The note at the top is the one thing that surprises people, so it is said plainly and
-/// every time: a server only ever shows you the people using the same password as you.
+/// The one thing that surprises people — a server only ever shows you the people using your
+/// password — is the address section's footer, and is also announced on the first connect.
 struct ServerConnectView: View {
     /// Read-only: @Observable tracks the reads in `body`, so no @Bindable is needed.
     let controller: ReceiverController
@@ -21,7 +21,6 @@ struct ServerConnectView: View {
     var body: some View {
         NavigationStack {
             Form {
-                noteSection
                 addressSection
                 if !controller.recentServers.isEmpty { recentSection }
                 if controller.isConnectedToServer { leaveSection }
@@ -42,15 +41,6 @@ struct ServerConnectView: View {
 #endif
     }
 
-    private var noteSection: some View {
-        Section {
-            Text("When you connect to a server, you will only see and connect to people on it who are using the same password as the one you have set.")
-                .font(.callout)
-        } header: {
-            Text("Please note")
-        }
-    }
-
     private var addressSection: some View {
         Section {
             TextField("Address or hostname", text: $host)
@@ -62,15 +52,10 @@ struct ServerConnectView: View {
 #endif
                 .onSubmit(connect)
                 .accessibilityLabel("Server address")
-                .accessibilityHint("The address of a RemSound server. The standard port is used automatically.")
             Button(controller.isConnectedToServer ? "Go to this server" : "Connect", action: connect)
                 .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
-        } header: {
-            Text(controller.isConnectedToServer ? "Change server" : "Connect to a server")
         } footer: {
-            Text(controller.isConnectedToServer
-                 ? "You are on \(controller.serverAddress). Connecting to another one leaves this one."
-                 : "Everyone on a server with the same password as yours becomes one group: you see each other by name, and you hear whoever you have each ticked.")
+            Text("You only see people using your password.")
         }
     }
 
@@ -93,7 +78,6 @@ struct ServerConnectView: View {
                     }
                 }
                 .accessibilityLabel(current ? "\(previous), connected" : previous)
-                .accessibilityHint("Double tap to connect to this server. Forget is available as an action.")
                 // Same rule as the peer and profile rows (pitfall 14): the context menu is
                 // not reliably reachable with VoiceOver, so the operation is also an
                 // explicit action — and no swipe actions, which iOS would double up.
@@ -107,7 +91,7 @@ struct ServerConnectView: View {
                 }
             }
         } header: {
-            Text("Servers you have used")
+            Text("Recent")
         }
     }
 
@@ -117,7 +101,6 @@ struct ServerConnectView: View {
                 controller.disconnectFromServer()
                 dismiss()
             }
-            .accessibilityHint("Stops using the server. The people on it leave your peer list; who you had ticked is remembered for when you come back.")
         }
     }
 

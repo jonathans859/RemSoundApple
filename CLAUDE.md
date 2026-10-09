@@ -378,6 +378,14 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 - Opus via SPM `alta/swift-opus` pinned `exact: "0.0.2"` (raw C API needed for the FEC flag).
 - **Screen-reader accessibility is the top priority**: every control labeled, status lines
   are plain sentences, audio start/stop fires cues + a VoiceOver announcement (iOS).
+  **Terse UI text** (user, 2026-10-09: "way less verbose … most of the stuff should honestly
+  be self explanatory"): no explanatory footers or accessibility hints that restate a
+  control. Where a consequence genuinely is not obvious, an `InfoButton` (ⓘ, "About …",
+  opens a short alert) sits next to the control — today only microphone quality, "Don't mix
+  with other sounds", Saved profiles, and iCloud sync. Exceptions kept on purpose: the
+  server list's empty-state reason, the headset toggle's "Needs …" note, the password
+  footer, and the magic-tap hint on the Audio tab (it teaches a gesture). Add an ⓘ before
+  adding a paragraph.
   VoiceOver **magic tap** (two-finger double tap) toggles mute anywhere in the iOS app
   (`ReceiverController.toggleMute()` announces the result); the Audio tab bar item
   reports "Muted" as its accessibility value. SwiftUI cannot attach custom VoiceOver
@@ -530,9 +538,10 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   which CI does not have; the real store silently no-ops when signed out, so tests against
   it would pass vacuously),
   `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a four-tab
-  `TabView`: **Connectivity** = Status / Server / Connected peers / Discovered peers (not on
-  a server) / Discovered peers on the server / Add a peer by address / "When someone ticks
-  you" (2026-10-09, Windows layout). Every one of those but Server and the accept picker is a
+  `TabView`: **Connectivity** = Status / Connected peers / Discovered peers (not on a
+  server) / Discovered peers on the server / Add a peer by address / Accept connections /
+  **Server last** (2026-10-09, Windows layout; the user moved Server to the bottom). Every one
+  of those but Server and the accept picker is a
   **collapsible heading** (`CollapsibleHeader`: one element, `.isHeader` + `.isButton`, value
   "Expanded"/"Collapsed" — hand-built because `Section(isExpanded:)` only collapses in
   sidebar lists and what VoiceOver says for `DisclosureGroup` is undocumented); Status and

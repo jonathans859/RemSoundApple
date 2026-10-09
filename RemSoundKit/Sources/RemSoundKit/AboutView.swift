@@ -35,7 +35,6 @@ struct AboutView: View {
                                   systemImage: "applelogo")
                     }
                     .accessibilityLabel("RemSound for Apple source code on GitHub")
-                    .accessibilityHint("Opens this app's repository in your browser")
 
                     Link(destination: windowsRepoURL) {
                         linkLabel(title: "RemSound for Windows",
@@ -43,11 +42,8 @@ struct AboutView: View {
                                   systemImage: "pc")
                     }
                     .accessibilityLabel("Official RemSound for Windows source code on GitHub")
-                    .accessibilityHint("Opens the original Windows app's repository in your browser")
                 } header: {
                     Text("Source code")
-                } footer: {
-                    Text("This app is an open-source companion to the Windows RemSound app.")
                 }
             }
             .formStyle(.grouped)

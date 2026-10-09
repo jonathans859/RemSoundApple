@@ -35,7 +35,7 @@ struct PeerDetailsView: View {
                     copySection(peer)
                 } else {
                     Section {
-                        Text("This peer is no longer in the list. It may have gone offline or been removed.")
+                        Text("This peer is gone.")
                     }
                 }
             }
@@ -65,7 +65,7 @@ struct PeerDetailsView: View {
     private var detailsSection: some View {
         Section {
             if detailLines.isEmpty {
-                Text("Details appear once RemSound is running.")
+                Text("No details while RemSound is stopped.")
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(Array(detailLines.enumerated()), id: \.offset) { _, line in
@@ -76,8 +76,6 @@ struct PeerDetailsView: View {
             }
         } header: {
             Text("Details")
-        } footer: {
-            Text("These refresh every second while this screen is open.")
         }
     }
 
@@ -87,19 +85,15 @@ struct PeerDetailsView: View {
                 .focused($nameFocused)
                 .autocorrectionDisabled()
                 .onSubmit { save(peer) }
-                .accessibilityHint("A name of your choosing, used everywhere this peer appears in RemSound")
             Button("Save name") { save(peer) }
                 .disabled(trimmedName == (peer.customName ?? ""))
-            Button("Use the name this peer announces") {
+            Button("Use original name") {
                 nameText = ""
                 controller.renamePeer(peer, to: nil)
             }
             .disabled(peer.customName == nil)
-            .accessibilityHint("Clears your own name for this peer, leaving \(peer.fallbackName)")
         } header: {
             Text("Name")
-        } footer: {
-            Text("The name sticks to this peer, not to its address, so it survives the other computer restarting, changing address, or reaching you over a VPN. It is kept on this device only and is not part of a profile.")
         }
     }
 
@@ -115,7 +109,6 @@ struct PeerDetailsView: View {
                     copied = false
                 }
             }
-            .accessibilityHint("Copies everything on this screen as text")
         }
     }
 

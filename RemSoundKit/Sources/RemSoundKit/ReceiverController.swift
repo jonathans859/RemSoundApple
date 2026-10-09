@@ -1077,23 +1077,24 @@ public final class ReceiverController {
 
         let text: String
         if !isConnectedToServer {
-            text = serverAddress.isEmpty ? "" : "Not connected to a server"
+            // The button already says "Connect to server"; a line repeating it is noise.
+            text = ""
         } else if serverEndpoint == nil {
             text = "Looking up \(serverAddress)…"
         } else if password.isEmpty {
             // The server groups by the password fingerprint and nothing else, so without one
             // there is nothing to join — and an empty list with no explanation is the worst
             // thing we could show here.
-            text = "Connected to \(serverAddress), but a group needs a password. Set one in Send and Receive."
+            text = "On \(serverAddress). Set a password to join a group."
         } else if !joined {
-            text = "Connected to \(serverAddress), waiting for its member list…"
+            text = "On \(serverAddress). Waiting for members…"
         } else {
             let others = relayGroup.members.count
             var sentence = others == 0
-                ? "On \(serverAddress). Nobody else here is using your password yet"
-                : "On \(serverAddress) with \(others) other\(others == 1 ? "" : "s") on your password"
+                ? "On \(serverAddress), nobody else yet"
+                : "On \(serverAddress) with \(others) other\(others == 1 ? "" : "s")"
             if relayGroup.isPairedWithOrdinary {
-                sentence += ", plus someone on a phone or an older app"
+                sentence += ", plus a phone or older app"
             }
             text = sentence
         }
@@ -1804,23 +1805,13 @@ public final class ReceiverController {
         if !sendEnabled {
             text = ""
         } else if password.isEmpty {
-            text = "Set a password below to send — audio is always encrypted"
+            text = "Set a password to send."
         } else if sendTargetCount == 0 {
-            text = "No peers selected — tick a peer above to send to it"
+            text = "No peers connected."
         } else {
-            var status = "Sending microphone audio to \(sendTargetCount) peer\(sendTargetCount == 1 ? "" : "s") as \(sendCodec.displayName)"
-            // Capture cadence diagnostic: ~5 ms = smooth packet pacing; ~100 ms would
-            // mean burst sending is back (the receiving side would need a huge buffer).
-            // Plain atomic read, NOT hardware polling (CLAUDE.md pitfall 6).
-            let chunkMs = microphone.captureChunkMs
-            if chunkMs > 0 {
-                status += String(format: ". Capture chunk %.0f ms", chunkMs)
-            }
-            let dropped = microphone.captureDroppedFrames
-            if dropped > 0 {
-                status += ". \(dropped) capture frames dropped"
-            }
-            text = status
+            // Kept to one short line (user, 2026-10-09); the capture cadence and dropped
+            // frames it used to carry are in Diagnostics.
+            text = "Sending to \(sendTargetCount) peer\(sendTargetCount == 1 ? "" : "s") (\(sendCodec.displayName))"
         }
         if text != sendStatus { sendStatus = text }
     }
@@ -1921,6 +1912,15 @@ public final class ReceiverController {
         }
 
         appendTransportDiagnostics(to: &tech, now: now)
+        if sendEnabled {
+            // Capture cadence: ~5 ms = smooth packet pacing; ~100 ms would mean burst sending
+            // is back (the receiving side would need a huge buffer). Plain atomic reads, NOT
+            // hardware polling (CLAUDE.md pitfall 6).
+            let chunkMs = microphone.captureChunkMs
+            if chunkMs > 0 { tech.append(String(format: "Microphone capture chunk: %.0f ms", chunkMs)) }
+            let dropped = microphone.captureDroppedFrames
+            if dropped > 0 { tech.append("Microphone capture frames dropped: \(dropped)") }
+        }
         appendServerDiagnostics(to: &tech)
         appendNetworkDiagnostics(to: &tech)
 
@@ -2343,7 +2343,7 @@ public final class ReceiverController {
                     source: .manual,
                     manualPeerId: peer.id,
                     isSelected: selectedAddresses.contains(peer.host),
-                    statusText: isRunning ? "Resolving…" : "—"))
+                    statusText: isRunning ? "Resolving…" : ""))
                 continue
             }
             // Merged with a discovery row when any resolved address matches one.
@@ -2372,43 +2372,41 @@ public final class ReceiverController {
     /// `ticksUs` applies only to somebody on a server, where the member list is the one
     /// place that difference is visible. nil means the question does not arise.
     private func statusText(addresses: [UInt32], selected: Bool, ticksUs: Bool? = nil) -> String {
-        guard isRunning else { return "—" }
+        guard isRunning else { return "" }
         guard selected else {
-            // They have ticked us and we have not ticked back: the one case where an
-            // unselected row is the user's move to make, so say so rather than just "no".
-            return ticksUs == true
-                ? "Not selected. They have ticked you — tick them back to hear each other"
-                : "Not selected"
+            // The list it is in already says it is not ticked. The one thing worth a word:
+            // they have ticked us, so it is the user's move.
+            return ticksUs == true ? "Has ticked you" : ""
         }
 
         var parts: [String] = []
         let flowing = addresses.first { engine.isAudioFlowing(from: $0, within: 1.5) }
         if let flowing, let format = engine.activeFormat(from: flowing) {
-            parts.append("Receiving \(format.codec == .opus ? "Opus" : "PCM") \(Int(format.frameDurationMs.rounded())) ms frames")
+            parts.append("\(format.codec == .opus ? "Opus" : "PCM") \(Int(format.frameDurationMs.rounded())) ms")
         } else {
             parts.append("No audio")
         }
         // Sound needs both ticks. Saying which half is missing is the whole reason the
         // member list carries a flag for it — silence with no explanation looks exactly
         // like a broken link, and it is the one thing a person cannot work out alone.
-        if ticksUs == false { parts.append("waiting for them to tick you") }
+        if ticksUs == false { parts.append("hasn't ticked you yet") }
 
         // Worst-news-first across the peer's paths: a mismatch on any of them matters more
         // than a clean link on another.
         let security = addresses.map { engine.peerSecurityStatus(address: $0) }
         if security.contains(.passwordMismatch) {
-            parts.append("password does not match")
+            parts.append("wrong password")
         } else if security.contains(.peerNeedsUpdate) {
             parts.append("peer app needs update")
         } else if security.contains(.secure) {
-            parts.append("encrypted link")
+            parts.append("encrypted")
         }
 
         let health = bestHealth(for: addresses, in: heartbeat.allPeerHealth())
         switch health?.state {
         case .healthy:
-            if let rtt = health?.rttMs { parts.append("\(rtt) ms round trip") }
-        case .stale: parts.append("connection unstable")
+            if let rtt = health?.rttMs { parts.append("\(rtt) ms ping") }
+        case .stale: parts.append("unstable")
         case .unreachable: parts.append("unreachable")
         case .unknown, nil: break
         }
@@ -2595,16 +2593,16 @@ public final class ReceiverController {
             summary = "Stopped"
         } else if !receiveEnabled {
             // Sending and peer connections keep working — say so instead of "Stopped".
-            summary = "Receiving is off — peers stay connected"
+            summary = "Receiving off"
         } else {
             let receivingCount = audiblePeerIds.count
             if receivingCount > 0 {
                 let buffer = mixer.currentBufferMs
-                summary = "Receiving from \(receivingCount) peer\(receivingCount == 1 ? "" : "s") — buffer \(buffer) ms"
+                summary = "Receiving from \(receivingCount) peer\(receivingCount == 1 ? "" : "s"), \(buffer) ms"
             } else if password.isEmpty {
-                summary = "Listening — set a password to receive audio"
+                summary = "Set a password to receive."
             } else {
-                summary = "Listening on port \(settings.listenPort)"
+                summary = "Listening"
             }
         }
         if summary != statusSummary { statusSummary = summary }
