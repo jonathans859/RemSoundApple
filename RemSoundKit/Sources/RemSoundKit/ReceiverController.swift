@@ -555,8 +555,7 @@ public final class ReceiverController {
     private let remoteControls = RemoteTransportControls()
     /// Everything worth knowing afterwards — see `EventLog`. Built with a default value (not in
     /// `init`) so the property observers above can always reach it.
-    private let eventLog = EventLog(directory: EventLog.defaultDirectory(),
-                                    deviceName: ProcessInfo.processInfo.hostName)
+    private let eventLog = EventLog(directory: EventLog.defaultDirectory())
 #if os(iOS)
     /// Connection requests as lock-screen notifications while the app is not on screen.
     private let requestNotifier = ConnectionRequestNotifier()

@@ -47,12 +47,10 @@ public final class EventLog: @unchecked Sendable {
     // File state: touched only on `queue`.
     private let queue = DispatchQueue(label: "RemSound.EventLog")
     private let directory: URL
-    private let deviceName: String
     private var handle: FileHandle?
     private var fileURL: URL?
     private var bytesInFile = 0
     private var creationFailed = false
-    private var ordinal = 0
     /// Bytes after which the current file is closed and a fresh one started.
     let rollAfterBytes: Int
 
@@ -62,9 +60,8 @@ public final class EventLog: @unchecked Sendable {
         return formatter
     }()
 
-    init(directory: URL, deviceName: String, rollAfterBytes: Int = 10 * 1024 * 1024) {
+    init(directory: URL, rollAfterBytes: Int = 10 * 1024 * 1024) {
         self.directory = directory
-        self.deviceName = deviceName
         self.rollAfterBytes = rollAfterBytes
     }
 
@@ -118,9 +115,7 @@ public final class EventLog: @unchecked Sendable {
         return queue.sync { () -> URL? in
             do {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                let stamp = Self.fileStamp.string(from: Date())
-                let url = directory.appendingPathComponent(
-                    "RemSound-\(Self.fileSafe(deviceName))-\(stamp)-events.log")
+                let url = freshFileURL(prefix: "RemSound events")
                 var text = Self.snapshotHeader + "\n"
                 for entry in entries {
                     text += "EVT\t\(timestamps.string(from: entry.date))\t\(entry.message)\n"
@@ -253,10 +248,7 @@ public final class EventLog: @unchecked Sendable {
         if creationFailed { return false }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            ordinal += 1
-            let stamp = Self.fileStamp.string(from: Date())
-            let url = directory.appendingPathComponent(
-                "RemSound-\(Self.fileSafe(deviceName))-\(stamp)-\(ordinal).log")
+            let url = freshFileURL(prefix: "RemSound")
             guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
                 creationFailed = true
                 return false
@@ -284,10 +276,27 @@ public final class EventLog: @unchecked Sendable {
             ?? .distantPast
     }
 
+    /// "RemSound 2026-10-09 15.30.12.log" — a name a person can read (user, 2026-10-09: the
+    /// old machine-name-and-counter names read as random ids). Year first, so sorting by name
+    /// is sorting by time; dots in the time, because a colon is not allowed in a file name on
+    /// the Mac. The device is not in the name: the folder is one device's anyway, and every
+    /// SNAP row names it. Two files in the same second get " (2)", " (3)" — a roll at the
+    /// size cap can do that.
+    private func freshFileURL(prefix: String) -> URL {
+        let base = "\(prefix) \(Self.fileStamp.string(from: Date()))"
+        var url = directory.appendingPathComponent(base + ".log")
+        var copy = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = directory.appendingPathComponent("\(base) (\(copy)).log")
+            copy += 1
+        }
+        return url
+    }
+
     private static let fileStamp: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
         return formatter
     }()
 
@@ -296,11 +305,5 @@ public final class EventLog: @unchecked Sendable {
         text.replacingOccurrences(of: "\t", with: " ")
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
-    }
-
-    private static func fileSafe(_ text: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        let mapped = text.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
-        return String(mapped.prefix(40))
     }
 }

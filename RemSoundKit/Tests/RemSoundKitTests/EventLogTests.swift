@@ -19,7 +19,7 @@ final class EventLogTests: XCTestCase {
     }
 
     private func makeLog(rollAfterBytes: Int = 10 * 1024 * 1024) -> EventLog {
-        EventLog(directory: directory, deviceName: "Test iPhone", rollAfterBytes: rollAfterBytes)
+        EventLog(directory: directory, rollAfterBytes: rollAfterBytes)
     }
 
     private func contents(_ url: URL?) throws -> String {
@@ -64,7 +64,10 @@ final class EventLogTests: XCTestCase {
         log.flushForTesting()
 
         let file = try XCTUnwrap(log.currentFile)
-        XCTAssertTrue(file.lastPathComponent.hasPrefix("RemSound-Test_iPhone-"))
+        // "RemSound 2026-10-09 15.30.12.log": readable, and sorts by time.
+        let name = file.deletingPathExtension().lastPathComponent
+        XCTAssertNotNil(name.range(of: #"^RemSound \d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}$"#,
+                                   options: .regularExpression), name)
         XCTAssertEqual(file.pathExtension, "log")
         let lines = try contents(file).split(separator: "\n").map(String.init)
         XCTAssertEqual(lines.first, EventLog.snapshotHeader)
@@ -120,7 +123,7 @@ final class EventLogTests: XCTestCase {
         let file = try XCTUnwrap(log.saveRecentEvents())
         XCTAssertEqual(file.deletingLastPathComponent().standardizedFileURL,
                        directory.standardizedFileURL)
-        XCTAssertTrue(file.lastPathComponent.hasSuffix("-events.log"))
+        XCTAssertTrue(file.lastPathComponent.hasPrefix("RemSound events "))
         let lines = try contents(file).split(separator: "\n").map(String.init)
         XCTAssertEqual(lines.first, EventLog.snapshotHeader)
         XCTAssertTrue(lines[1].hasSuffix("\tfirst"))
