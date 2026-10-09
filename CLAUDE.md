@@ -212,7 +212,9 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   of the first `start()`.
 - **Servers (relay groups)** (2026-10-02, upstream server-v2.9 parity): a server is **somewhere
   you go, not a peer you add** — one "Connect to server" button on Connectivity opens
-  `ServerConnectView` (address, the ones used before, leave), and the people on it get their
+  `ServerConnectView` (Windows layout, 2026-10-09: **Remembered servers first**, always shown,
+  tap = go, Forget = action / context menu / Delete on macOS, up to 16; then the address box;
+  then leave), and the people on it get their
   own list right under the ordinary one. One server at a time; connecting elsewhere leaves
   the first. Persisted (`serverHost` / `serverConnected` / `recentServers`) and re-entered at
   launch, like the receive and send toggles; carried in profiles (`ReceiverProfile.serverHost`,
@@ -576,7 +578,8 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   **collapsible heading** (`CollapsibleHeader`: one element, `.isHeader` + `.isButton`, value
   "Expanded"/"Collapsed" — hand-built because `Section(isExpanded:)` only collapses in
   sidebar lists and what VoiceOver says for `DisclosureGroup` is undocumented); Status and
-  Connected peers start open, the rest folded, not persisted. Connected = every ticked row
+  Connected peers start open, the rest folded; which are open is REMEMBERED (`@AppStorage`
+  "expanded.*", device-local, user 2026-10-09). Connected = every ticked row
   (network and server alike), discovered = the unticked ones, so a tick MOVES a row between
   lists — the row toggle posts "<name> moved to <list>" because the focused element vanishes
   (the server button opens `ServerConnectView.swift`; peer rows carry details / remove as

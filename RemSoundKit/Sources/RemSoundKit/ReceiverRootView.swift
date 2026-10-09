@@ -20,14 +20,15 @@ public struct ReceiverRootView: View {
     /// row. (Rows move between lists when ticked, so this matters more than it used to.)
     @State private var peerDetailsRequest: PeerDetailsRequest?
 
-    // Which Connectivity headings are open. Not persisted, so every launch reads the same:
-    // Connected peers opens on its own (asked for, 2026-10-09), and so does Status, the
-    // "am I connected" answer; the lists you only visit to add someone start folded away.
-    @State private var statusExpanded = true
-    @State private var connectedExpanded = true
-    @State private var discoveredExpanded = false
-    @State private var serverPeersExpanded = false
-    @State private var addPeerExpanded = false
+    // Which Connectivity headings are open — remembered across launches (user, 2026-10-09),
+    // device-local, not in profiles. The defaults are the first launch only: Connected peers
+    // and Status (the "am I connected" answer) open, the lists you only visit to add
+    // someone folded away.
+    @AppStorage("expanded.status") private var statusExpanded = true
+    @AppStorage("expanded.connectedPeers") private var connectedExpanded = true
+    @AppStorage("expanded.discoveredPeers") private var discoveredExpanded = false
+    @AppStorage("expanded.serverPeers") private var serverPeersExpanded = false
+    @AppStorage("expanded.addPeer") private var addPeerExpanded = false
 
     private struct PeerDetailsRequest: Identifiable {
         let id: String

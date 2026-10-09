@@ -283,7 +283,9 @@ public final class ReceiverSettings {
         set { defaults.set(newValue, forKey: "serverConnected") }
     }
 
-    public static let maxRecentServers = 8
+    /// A remembered list rather than a short "recent" one (Windows keeps every server it has
+    /// been on); capped only so it cannot grow without bound.
+    public static let maxRecentServers = 16
 
     /// The servers the user has connected to before, most recent first — the list the server
     /// sheet offers instead of making them retype an address.

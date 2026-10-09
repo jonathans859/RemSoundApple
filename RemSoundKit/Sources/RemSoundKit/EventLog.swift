@@ -13,7 +13,7 @@ import Foundation
 ///   row of counters once a second. Created lazily on the first write while enabled — switching
 ///   it on costs nothing until something happens — rolled to a fresh file at `rollAfterBytes`
 ///   (a phone left streaming for days must not grow one file without bound), and pruned at
-///   start to the newest `keepFiles` within `keepDays`.
+///   start to the newest `keepFiles` (10, so at most ~100 MB) within `keepDays`.
 ///
 /// Thread-safe: events come from the network and capture threads as well as the main actor.
 /// The in-memory list is updated under a lock (cheap); file writes go to a serial queue so a
@@ -30,7 +30,8 @@ public final class EventLog: @unchecked Sendable {
 
     public static let memoryDepth = 300
     static let keepDays: TimeInterval = 14 * 24 * 3600
-    static let keepFiles = 20
+    /// At most ~100 MB at the 10 MB roll — a phone should not spend more than that on logs.
+    static let keepFiles = 10
     static let snapshotHeader = [
         "Kind", "Timestamp", "Device", "Running", "Receive", "Send", "Codec", "TargetMs",
         "BufferMs", "ReceivedKB", "SentKB", "Underruns", "Trims", "Peers", "Audible", "Heartbeat",

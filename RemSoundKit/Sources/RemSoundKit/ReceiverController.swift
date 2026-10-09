@@ -1115,6 +1115,7 @@ public final class ReceiverController {
     }
 
     public func forgetServer(host: String) {
+        eventLog.event("server: forgot remembered server \(host)")
         recentServers.removeAll { $0.caseInsensitiveCompare(host) == .orderedSame }
         settings.recentServers = recentServers
     }
