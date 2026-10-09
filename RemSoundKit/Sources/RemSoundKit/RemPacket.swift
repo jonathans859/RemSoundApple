@@ -120,6 +120,13 @@ public enum RemPacket {
             fingerprint = Array(p[36..<44])
         }
 
+        // A codec we cannot decode is not a format at all. This used to fall back to PCM,
+        // which would play anything else as raw noise — and since Windows 6.0 there IS
+        // something else on the wire: codec 3, Jamulus-style custom-mode Opus. Windows sends
+        // it only to a copy that advertised it can decode it (format byte 33 / the heartbeat's
+        // tenth byte, which we never set), so this should never be reached; fail closed anyway.
+        guard let codec = AudioTransportCodec(rawValue: Int(int32(24))) else { return nil }
+
         var lane = RenderRoute.mixed
         if p.count >= formatPayloadExtendedSize {
             lane = RenderRoute(rawValue: p[32]) ?? .mixed
@@ -132,7 +139,7 @@ public enum RemPacket {
             encoding: Int(int32(12)),
             blockAlign: Int(int32(16)),
             averageBytesPerSecond: Int(int32(20)),
-            codec: AudioTransportCodec(rawValue: Int(int32(24))) ?? .pcm,
+            codec: codec,
             frameSamplesPerChannel: Int(int32(28)),
             lane: lane)
         return (format, fingerprint)

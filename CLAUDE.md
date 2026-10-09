@@ -45,6 +45,18 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   to `.mixed`, never reject. We WRITE 46 whenever we have a fingerprint (0 ticks = nothing
   open / the device would not say, which is the "no figure" value on both sides); we do not
   read the field back yet — there is no receive-side journey display to spend it on.
+  Byte @33 (reserved until upstream 6.0) is a flags byte — bit 0 = "I can decode Jamulus-style
+  custom-mode Opus" (codec **3**); we write 0 and ignore it on read. **Fail closed**
+  (`AudioFormatInfo.unusableReason`, upstream audit R4): channels 1-2, rate 8000-192000,
+  frame 1-2880, Opus only at libopus rates; an **unknown codec is no format at all**
+  (`readFormat` returns nil — it used to fall back to PCM, which would play codec 3 as noise).
+  Windows sends codec 3 only to a copy that advertised the flag, never through a server.
+- **Types this port drops on purpose** (unknown → `readHeader` returns nil): **11 TickProof**
+  (sealed "I have ticked you": 53 bytes = nonce‖tag‖ct of version(1) + unix-seconds(8 LE) +
+  sender discovery instance id(16, RFC 4122 big-endian), every 5 s to each ticked non-server
+  peer — NOT implemented yet, see `.claude-notes/upstream-sync-v6.1.md`), **12 Metronome**,
+  and the server-only **13 Timing / 14 Server status / 15 Server ping** (server-v2.14/2.16;
+  14 is only ever sent to a member that pings with 15, which we never do).
 - **Crypto**: PBKDF2-HMAC-SHA256, **100 000** iterations, salts `"RemSound.v1.audio-key"`
   (32-byte key) / `"RemSound.v1.fingerprint"` (8 bytes). AES-256-GCM packet layout is
   **`nonce(12) ‖ tag(16) ‖ ciphertext`** — CryptoKit's `combined` is nonce‖ct‖tag, do NOT
@@ -71,7 +83,8 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   Unicast is what crosses VPNs; receiving an announcement auto-adds the source IP as a
   unicast target — that auto-learn is how iOS discovery works without broadcast.
 - **Heartbeat**: 1 Hz ping, streamId 0xFFFF, payload = kind byte + int64 LE monotonic ms
-  echoed verbatim in the pong. Pongs match peers **by IP only**. Heartbeats leave the same
+  echoed verbatim in the pong (upstream 6.0 may append a 10th flags byte, same meaning as
+  format @33 — read a MINIMUM of 9, never exactly 9). Pongs match peers **by IP only**. Heartbeats leave the same
   socket audio arrives on (shared NAT pinhole; also claims our relay slot).
 - **Relay address-proof** (type **10**, upstream server-v2.5): the relay cookies each newly
   seen client address; echo the packet back **verbatim to its source**, from the audio socket,

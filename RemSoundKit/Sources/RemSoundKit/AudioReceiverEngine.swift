@@ -374,6 +374,10 @@ public final class AudioReceiverEngine {
 
     private func handleFormat(remote: UDPEndpoint, streamId: UInt16, payload: ArraySlice<UInt8>) {
         guard let (format, fingerprint) = RemPacket.readFormat(payload) else { return }
+        if let reason = format.unusableReason {
+            noteUnusableFormat(from: remote, reason: reason)
+            return
+        }
 
         lock.lock()
         // Gate read under the lock: setPlaybackEnabled(false) flips it before disposing
@@ -524,6 +528,19 @@ public final class AudioReceiverEngine {
             onDiagnostic?("session pruned (idle): \(session.endpoint) stream=\(session.streamId)")
         }
         if !removed.isEmpty { onSessionsChanged?() }
+    }
+
+    /// Last diagnostic for an unusable format, under `lock`. Rate-limited because a corrupted
+    /// or spoofed stream re-announces its format four times a second.
+    private var lastUnusableFormatNote = Date.distantPast
+
+    private func noteUnusableFormat(from remote: UDPEndpoint, reason: String) {
+        lock.lock()
+        let now = Date()
+        let due = now.timeIntervalSince(lastUnusableFormatNote) >= 5
+        if due { lastUnusableFormatNote = now }
+        lock.unlock()
+        if due { onDiagnostic?("format packet rejected from \(remote): \(reason)") }
     }
 
     // MARK: - Test seams

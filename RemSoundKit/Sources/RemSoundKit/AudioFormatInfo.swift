@@ -63,6 +63,34 @@ public struct AudioFormatInfo: Equatable, Sendable {
         self.lane = lane
     }
 
+    /// Largest frame Opus can encode at 48 kHz (60 ms); nothing on the wire may legitimately
+    /// exceed it, and the decode scratch is sized from this field.
+    public static let maxFrameSamplesPerChannel = 2880
+
+    /// Why this format cannot be played, or nil when it can. A Format packet is the one
+    /// packet that is neither encrypted nor authenticated, so every field arrives unchecked
+    /// from the network: zero channels divides by zero in the PCM path, and a huge frame size
+    /// sizes the Opus decode scratch. Fail closed, as upstream does since its 2026-08-23
+    /// audit (finding R4, `AudioFormatInfo.IsUsable`). Rejects only values no RemSound has
+    /// ever sent; the fields we do not act on (bits, encoding, block align, bytes/s) are
+    /// deliberately not checked, so a port that fills them differently keeps working.
+    public var unusableReason: String? {
+        if !(1...2).contains(channels) {
+            return "channel count \(channels) (must be 1 or 2)"
+        }
+        if !(8000...192_000).contains(sampleRate) {
+            return "sample rate \(sampleRate) (outside 8000-192000)"
+        }
+        if !(1...Self.maxFrameSamplesPerChannel).contains(frameSamplesPerChannel) {
+            return "frame size \(frameSamplesPerChannel) samples (must be 1-\(Self.maxFrameSamplesPerChannel))"
+        }
+        // libopus accepts only these rates; its decoder would fail to construct on anything else.
+        if codec == .opus, ![8000, 12000, 16000, 24000, 48000].contains(sampleRate) {
+            return "Opus at \(sampleRate) Hz (Opus supports 8000, 12000, 16000, 24000 or 48000)"
+        }
+        return nil
+    }
+
     /// Human-friendly frame duration; may be fractional (2.5 ms at 48 kHz / 120 samples).
     public var frameDurationMs: Double {
         sampleRate > 0 ? Double(frameSamplesPerChannel) * 1000.0 / Double(sampleRate) : 0

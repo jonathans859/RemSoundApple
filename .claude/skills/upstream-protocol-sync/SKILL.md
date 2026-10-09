@@ -19,6 +19,12 @@ https://github.com/Ednunp/RemSound. The C# source there is the protocol spec.
 Always finish a scan by updating this file to the newest commit you reviewed and committing
 it with whatever else changed. If the file is missing or the SHA no longer exists upstream
 (force-push), tell the user and fall back to scanning by date from `scannedAt`.
+If the SHA still exists but is not in `main`'s history (upstream rewrote it — happened
+2026-10, see `.claude-notes/upstream-sync-v6.1.md`), take the range from
+`gh api 'repos/Ednunp/RemSound/compare/<sha>...main' --jq '.commits[].sha'` instead; its
+`.files` list caps at 300, so triage per commit. For big ranges, `git fetch` the local clone
+at `~/gitkeep/Ednunp/RemSound` (fetch only — its working tree has the user's staged changes)
+and diff wire files with `git diff <old> origin/main -- <paths>`.
 
 ## Procedure
 
@@ -31,8 +37,11 @@ it with whatever else changed. If the file is missing or the SHA no longer exist
    (`gh api repos/Ednunp/RemSound/commits/<sha> --jq '.files[].filename'`):
    - **Wire contract — MUST review the patch**: `src/RemSound.Core/RemPacket.cs`,
      `RemSoundCrypto.cs`, `AudioFormatInfo.cs`, `PeerDiscoveryService.cs`,
-     `HeartbeatService.cs`, `PcmFrame*.cs`. Any change to packet layout, sizes, ports,
-     crypto parameters, JSON keys, or timing constants likely needs mirroring here.
+     `HeartbeatService.cs`, `PcmFrame*.cs`, `AudioTransportCodec.cs`, `TickProof.cs`,
+     `AddrCheckEchoGate.cs`, `RelayGroupClient.cs`, `server/RELAY-GROUPS.md` (the server-group
+     spec). Any change to packet layout, sizes, ports, crypto parameters, JSON keys, or timing
+     constants likely needs mirroring here. `src/RemSound.App/SelfTest.CrossPort.cs` is
+     upstream's own list of cross-port pins — read its diff too; a new `Pin(` is a new contract.
    - **Behavioural — review the patch, usually optional**: `src/RemSound.Receiver/**`,
      `src/RemSound.Sender/**`, `server/remsound-relay.py`. Windows-only rendering/device
      code (WASAPI/ASIO lanes, MultiOutput, timers) does not apply — this port has a single
@@ -42,8 +51,11 @@ it with whatever else changed. If the file is missing or the SHA no longer exist
    - **Ignore**: `src/RemSound.App/**` (WinForms UI), docs, sounds, installer, tests,
      release notes — unless the release notes mention "protocol", "wire", "packet",
      "encryption", or a header-version bump.
-   - Relay: only the **v1 pairwise reflector** path matters; v2 "lobby" packets
-     (header version 2) are explicitly out of scope for this port.
+   - Relay: the v1 pairwise reflector AND, since 2026-10-02, server groups (header version
+     2, `server/RELAY-GROUPS.md`) are in scope — see the "Server groups" wire-contract entry in
+     CLAUDE.md. Server-only features (metronome timing, server status/ping) are optional.
+   - Accept-connections behaviour lives in `src/RemSound.App/MainForm.AcceptConnections.cs`
+     (an App file, but ported here as `PeerAccept.swift` — review its diff).
 
 3. **Read patches** for every commit that survived triage:
    `gh api repos/Ednunp/RemSound/commits/<sha> --jq '.files[] | select(.filename == "PATH") | .patch'`
