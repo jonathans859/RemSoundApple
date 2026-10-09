@@ -161,6 +161,16 @@ public final class ReceiverSettings {
         set { defaults.set(newValue, forKey: "headsetTransportControls") }
     }
 
+    /// What happens when somebody else ticks us — ask (the default, as upstream), tick them
+    /// back at once, or nothing until the user ticks them. Device-local and NOT in profiles:
+    /// upstream keeps it machine-wide so it holds whichever profile is loaded. Stored as
+    /// upstream's raw value; absent (0) is `.prompt`, and an unknown one reads as `.prompt`
+    /// too — asking is the choice that can never connect anybody behind the user's back.
+    public var acceptPeerConnections: PeerAcceptMode {
+        get { PeerAcceptMode(rawValue: defaults.integer(forKey: "acceptPeerConnections")) ?? .prompt }
+        set { defaults.set(newValue.rawValue, forKey: "acceptPeerConnections") }
+    }
+
     /// Stable id of the input the user picked for microphone sending (see
     /// `MicrophoneCapture.availableInputs`). Nil/empty = system default input.
     public var selectedMicrophoneId: String? {

@@ -82,7 +82,20 @@ public final class AudioReceiverEngine {
     /// **Only a server sends one**, which is how the app can tell a user who typed a
     /// server's address into the add-a-peer box what they have actually got.
     public var onAddrCheckReceived: ((UDPEndpoint) -> Void)?
+    /// Somebody we have NOT ticked is sending us audio, which means they have ticked us —
+    /// the only signal there is on a network that somebody wants to connect, and what the
+    /// "Accept connections from other peers" setting acts on (upstream
+    /// `OnUnselectedSenderHeard`). The flag is whether the password fingerprint in their
+    /// format packet is ours; false also when either side has no password, or the sender is
+    /// too old to say. Fired on the network thread, at most once per
+    /// `unselectedSenderInterval` for any one address, so a peer left sending cannot turn
+    /// into a stream of questions. Wire BEFORE start().
+    public var onUnselectedSenderHeard: ((_ remote: UDPEndpoint, _ samePassword: Bool) -> Void)?
     public var onDiagnostic: ((String) -> Void)?
+
+    public static let unselectedSenderInterval: TimeInterval = 10
+    /// Last report per address, under `lock`.
+    private var unselectedSenderNoted: [UInt32: Date] = [:]
 
     /// Gate equivalent to the Windows "Receive audio" tick: when false the socket stays
     /// bound (heartbeats keep flowing) but Format/Audio packets are discarded pre-decode.
@@ -365,8 +378,28 @@ public final class AudioReceiverEngine {
         lock.lock()
         // Gate read under the lock: setPlaybackEnabled(false) flips it before disposing
         // sessions, so a packet racing the teardown can't open a fresh one.
-        guard playbackEnabled, isSenderAllowed(remote) else {
+        guard playbackEnabled else {
             lock.unlock()
+            return
+        }
+        guard isSenderAllowed(remote) else {
+            // Somebody sending us audio we have not asked for has ticked US. Format packets
+            // carry the fingerprint and repeat every 250 ms, so this is the one place to
+            // notice — audio packets would add nothing but volume.
+            let now = Date()
+            var report: Bool?
+            if onUnselectedSenderHeard != nil,
+               now.timeIntervalSince(unselectedSenderNoted[remote.address] ?? .distantPast)
+                   >= Self.unselectedSenderInterval {
+                unselectedSenderNoted[remote.address] = now
+                if let fingerprint, let mine = audioFingerprint {
+                    report = RemSoundCrypto.fingerprintsEqual(fingerprint, mine)
+                } else {
+                    report = false
+                }
+            }
+            lock.unlock()
+            if let report { onUnselectedSenderHeard?(remote, report) }
             return
         }
 

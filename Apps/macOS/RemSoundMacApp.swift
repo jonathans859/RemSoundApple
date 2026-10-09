@@ -22,13 +22,7 @@ struct RemSoundMacApp: App {
         MenuBarExtra {
             StatusMenu(controller: controller)
         } label: {
-            // The label is installed in the status bar at launch, so its task is our
-            // app-did-launch hook: reception starts immediately, not on first menu open.
-            Image(systemName: "antenna.radiowaves.left.and.right")
-                .task {
-                    controller.start()
-                }
-                .accessibilityLabel("RemSound")
+            StatusItemLabel(controller: controller)
         }
 
         Window("RemSound", id: "main") {
@@ -57,6 +51,28 @@ struct RemSoundMacApp: App {
         // start as a bare menu bar item, so both launch and restoration stay silent.
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
+    }
+}
+
+/// The status item's icon. It is installed in the menu bar at launch, so its task is our
+/// app-did-launch hook: reception starts immediately, not on first menu open.
+private struct StatusItemLabel: View {
+    let controller: ReceiverController
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Image(systemName: "antenna.radiowaves.left.and.right")
+            .task {
+                // Somebody has ticked us and the user is to be asked. The question lives in
+                // the main window, which this app normally runs with closed — so open it, in
+                // front, as upstream puts its question in front of whatever is on screen.
+                controller.onConnectionRequestPending = { [openWindow] in
+                    openWindow(id: "main")
+                    NSApp.activate()
+                }
+                controller.start()
+            }
+            .accessibilityLabel("RemSound")
     }
 }
 

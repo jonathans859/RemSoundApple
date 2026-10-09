@@ -107,6 +107,15 @@ public struct PeerListEntry: Identifiable, Hashable, Sendable {
     }
 }
 
+/// Somebody has ticked us and the user is being asked whether to tick them back — see
+/// `ReceiverController.acceptPeerConnections`. One at a time, so the UI shows at most one.
+public struct ConnectionRequest: Identifiable, Equatable, Sendable {
+    /// The `PeerAcceptPolicy` key of the person asking — stable for as long as they are.
+    public let id: String
+    /// The whole question as one plain sentence, naming who it is and where they are.
+    public let question: String
+}
+
 /// Holds a NotificationCenter observer token and unregisters it when it goes away, so an
 /// actor-isolated owner does not need a `deinit` of its own (a `@MainActor` class cannot
 /// touch its stored properties from the nonisolated `deinit`).
@@ -171,6 +180,12 @@ public final class ReceiverController {
     /// address-proof challenge, and nothing else sends one. The host they typed, so the UI
     /// can offer to connect to it as a server instead; nil once offered and dismissed.
     public private(set) var serverSuggestion: String?
+    /// Somebody who has ticked us, waiting on the user's answer (ask mode only). The UI puts
+    /// this up as a question and answers through `answerConnectionRequest`.
+    public private(set) var pendingConnectionRequest: ConnectionRequest?
+    /// Fired when a connection question goes up. The macOS app uses it to open its window:
+    /// the question lives there, and a menu-bar app is usually running with it closed.
+    public var onConnectionRequestPending: (@MainActor () -> Void)?
     /// Inputs the user can pick for microphone sending. Refreshed when the hardware set
     /// changes (route change / device list notifications), at start, and on send start —
     /// never on a timer; enumeration IPC alongside live playback causes audible glitches.
@@ -444,6 +459,19 @@ public final class ReceiverController {
         }
     }
 
+    /// What happens when somebody else ticks us: ask (default), tick them back at once, or
+    /// nothing until the user ticks them — the Windows "Accept connections from other peers".
+    /// Device-local and not part of a profile, like upstream's machine-wide setting. Two
+    /// things set it off: audio arriving from somebody we have not ticked (on a network,
+    /// the only sign they have ticked us), and a server's member list saying so outright.
+    /// Somebody on a different password is never offered — their audio could not be played.
+    public var acceptPeerConnections: PeerAcceptMode {
+        didSet {
+            guard acceptPeerConnections != oldValue else { return }
+            settings.acceptPeerConnections = acceptPeerConnections
+        }
+    }
+
     /// What the app applies at the next launch: nothing (default), the last applied
     /// profile, or one fixed profile. Persisted; consumed before the settings are read
     /// in `init` by `ProfileStore.applyStartupProfile(to:)`.
@@ -536,6 +564,11 @@ public final class ReceiverController {
     /// The user's friendly names for peers, applied in `refreshPeerList`. Device-local and
     /// shared by every profile — see `PeerNameBook`.
     private var peerNames: PeerNameBook
+    /// Who has been asked about this run, and who the user has deliberately unticked — see
+    /// `PeerAcceptPolicy`. Run-scoped by design.
+    private var acceptPolicy = PeerAcceptPolicy()
+    /// What answering yes to `pendingConnectionRequest` does.
+    private var pendingAcceptance: (@MainActor () -> Void)?
     private var refreshTask: Task<Void, Never>?
     /// Whether a UI is currently on screen (battery finding 2). Defaults to false so a
     /// menu-bar macOS launch — window closed — does no presentation work until the window
@@ -607,6 +640,7 @@ public final class ReceiverController {
         password = settings.password
         exclusiveAudio = settings.exclusiveAudio
         headsetTransportControls = settings.headsetTransportControls
+        acceptPeerConnections = settings.acceptPeerConnections
         receiveEnabled = settings.receiveEnabled
         // Loaded into the pending flag, not sendEnabled itself: capture must not start
         // until the engines are up (end of the first start()); didSet is skipped in init
@@ -656,6 +690,11 @@ public final class ReceiverController {
         }
         engine.onAddrCheckReceived = { [weak self] endpoint in
             Task { @MainActor [weak self] in self?.noteAddressCheck(from: endpoint) }
+        }
+        engine.onUnselectedSenderHeard = { [weak self] remote, samePassword in
+            Task { @MainActor [weak self] in
+                self?.someoneWantsToConnect(from: remote, samePassword: samePassword)
+            }
         }
         relayGroup.onChanged = { [weak self] in
             Task { @MainActor [weak self] in
@@ -1048,7 +1087,22 @@ public final class ReceiverController {
 
     // MARK: - Peer selection
 
+    /// The user ticking or unticking a row. An untick is a decision nothing may quietly undo
+    /// (`PeerAcceptPolicy`): the person may still have us ticked, so their audio keeps
+    /// arriving, and without remembering this automatic mode would tick them straight back.
     public func setPeerSelected(_ entry: PeerListEntry, selected: Bool) {
+        if selected {
+            acceptPolicy.userTicked(acceptKeys(for: entry))
+        } else {
+            acceptPolicy.userUnticked(acceptKeys(for: entry))
+        }
+        applySelection(entry, selected: selected)
+        refreshNow()
+    }
+
+    /// Persist a row's tick and push it to the allow-list and the server. No refresh: the
+    /// accept path runs inside the 1 Hz tick and must not re-enter it.
+    private func applySelection(_ entry: PeerListEntry, selected: Bool) {
         // Select/deselect every address the peer is reachable at, plus the manual hostname
         // if there is one, so the choice survives path changes and re-resolution. A person on
         // a server has no address, so their row's key is their client id.
@@ -1064,6 +1118,118 @@ public final class ReceiverController {
         }
         settings.selectedPeerAddresses = selectedAddresses
         applyPeerSelection()
+    }
+
+    // MARK: - Accepting connections
+
+    /// The `PeerAcceptPolicy` keys a row answers to — what the user's untick refuses, and
+    /// what a request from that person is asked under.
+    private func acceptKeys(for entry: PeerListEntry) -> [String] {
+        switch entry.source {
+        case .server:
+            return entry.serverMemberId.map { [PeerAcceptPolicy.memberKey(hex: $0)] } ?? []
+        case .serverPair:
+            return [PeerAcceptPolicy.pairKey(server: entry.addressString)]
+        case .discovered, .manual:
+            // Every path: a multi-homed peer unticked here must not get back in by sending on
+            // its other address.
+            return entry.allAddressStrings.map { PeerAcceptPolicy.networkKey(address: $0) }
+        }
+    }
+
+    /// Somebody not ticked here is sending us audio on a network, so they have ticked us.
+    private func someoneWantsToConnect(from remote: UDPEndpoint, samePassword: Bool) {
+        guard isRunning, samePassword else { return }
+        // A server's own address is not a person: the people behind it arrive in its member
+        // list with names of their own, and its pair partner is asked about from there.
+        if let serverEndpoint, serverEndpoint.address == remote.address { return }
+        if peers.contains(where: { $0.isOnServer && $0.addresses.contains(remote.address) }) { return }
+        let address = remote.addressString
+        let row = peers.first { !$0.isOnServer && $0.addresses.contains(remote.address) }
+        if row?.isSelected == true || selectedAddresses.contains(address) { return }
+
+        let who = row.map { "\($0.name) at \(address)" } ?? address
+        let rowId = row?.id
+        offerConnection(key: PeerAcceptPolicy.networkKey(address: address),
+                        question: "\(who) would like to connect to you.",
+                        name: who) { [weak self] in
+            self?.acceptNetworkPeer(rowId: rowId, address: address)
+        }
+    }
+
+    private func acceptNetworkPeer(rowId: String?, address: String) {
+        // Looked up again: by the time a question is answered the row may have changed.
+        if let entry = peers.first(where: { $0.id == rowId })
+            ?? peers.first(where: { !$0.isOnServer && $0.allAddressStrings.contains(address) }) {
+            applySelection(entry, selected: true)
+            return
+        }
+        // Nobody we know, so they become what they are — a peer at an address (upstream
+        // does the same). Ticked by its address, which is also the manual host.
+        addManualPeer(host: address)
+        selectedAddresses.insert(address)
+        settings.selectedPeerAddresses = selectedAddresses
+        applyPeerSelection()
+    }
+
+    /// The server's member list says who has ticked us, so there is no guessing on a server.
+    /// Everybody listed is on our password by definition — the server groups by it. Runs in
+    /// the functional half of the tick, so it works with the window closed or the screen locked.
+    private func reviewServerTicks() {
+        for entry in peers where entry.isOnServer && !entry.isSelected {
+            let key: String
+            switch entry.source {
+            case .server:
+                guard entry.ticksUs == true, let hex = entry.serverMemberId else { continue }
+                key = PeerAcceptPolicy.memberKey(hex: hex)
+            case .serverPair:
+                // A phone or an older app cannot say it has ticked us; the server giving it
+                // the slot beside us is the same statement, so it is asked about like anyone.
+                key = PeerAcceptPolicy.pairKey(server: entry.addressString)
+            case .discovered, .manual:
+                continue
+            }
+            let rowId = entry.id
+            offerConnection(key: key,
+                            question: "\(entry.name) on the server would like to connect to you.",
+                            name: entry.name) { [weak self] in
+                guard let self, let current = self.peers.first(where: { $0.id == rowId }) else { return }
+                self.applySelection(current, selected: true)
+            }
+        }
+    }
+
+    /// Act on the setting for one person. `accept` only changes the selection; the row
+    /// list is rebuilt here so the rest of the tick sees the tick.
+    private func offerConnection(key: String, question: String, name: String,
+                                 accept: @escaping @MainActor () -> Void) {
+        switch acceptPolicy.decide(key: key, mode: acceptPeerConnections,
+                                   promptOpen: pendingConnectionRequest != nil) {
+        case .ignore:
+            return
+        case .accept:
+            accept()
+            refreshPeerList()
+            announce("Connected to \(name).")
+        case .ask:
+            pendingAcceptance = { [weak self] in
+                accept()
+                self?.announce("Connected to \(name).")
+            }
+            pendingConnectionRequest = ConnectionRequest(id: key, question: question)
+            onConnectionRequestPending?()
+        }
+    }
+
+    /// The user's answer to `pendingConnectionRequest`. Either way they are not asked about
+    /// this person again this run — a "no" is remembered the same as a "yes".
+    public func answerConnectionRequest(allow: Bool) {
+        guard pendingConnectionRequest != nil else { return }
+        let acceptance = pendingAcceptance
+        pendingConnectionRequest = nil
+        pendingAcceptance = nil
+        guard allow else { return }
+        acceptance?()
         refreshNow()
     }
 
@@ -1399,6 +1565,7 @@ public final class ReceiverController {
         relayGroup.tick()
         resolveServerIfNeeded()
         refreshPeerList()
+        reviewServerTicks()
         updateCues()
         updateSendTargets()
         updateIOBufferDemand()

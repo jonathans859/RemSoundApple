@@ -211,13 +211,27 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   Why the server list is empty always has a reason on screen (no password to be grouped by, no
   member list yet, nobody else on your password), and a member who has not ticked us back says
   so rather than going quiet — that is the only thing a person cannot work out alone.
-  NOT done yet, and upstream's hard-won advice if it is: "Accept connections from other peers"
-  (ask each time / automatically / manual) and its companion rule that a **deliberate untick
-  must stick for the run** — with auto-accept on, unticking somebody who still has us ticked
-  lets their audio back in, which re-ticks them, and the user cannot let anyone go.
+- **Accept connections from other peers** (2026-10-09, upstream `MainForm.AcceptConnections.cs`
+  parity): ask each time (**default**, as upstream) / automatically / manual
+  (`PeerAcceptMode`, raw values = upstream's and stored as such). Device-local, **not in
+  profiles** (upstream keeps it machine-wide). Two triggers: a format packet from a sender
+  outside the allow-list (`AudioReceiverEngine.onUnselectedSenderHeard`, rate-limited 10 s per
+  address, carries whether its fingerprint is ours — a different password or no fingerprint is
+  never offered; nothing fires while receive is off), and a roster member with `ticksUs` or the
+  server's pair partner, reviewed in the **functional** half of the tick
+  (`reviewServerTicks`). The server's own address is never offered as a person. One question
+  at a time (`pendingConnectionRequest`, an alert hosted in its own view so the 1 Hz re-render
+  cannot rebuild it); the macOS app opens its window for it via `onConnectionRequestPending`.
+  `PeerAcceptPolicy` (pure, `PeerAcceptTests`) holds upstream's two hard-won rules: **asked
+  once per person per run**, yes or no; and a **deliberate untick sticks for the run** —
+  with automatic on, unticking somebody who still has us ticked leaves their audio arriving,
+  which would re-tick them, and the user could never let anyone go. Only
+  `setPeerSelected` (the user) records refusals/lifts them; accepting goes through
+  `applySelection`, which must not refresh (it runs inside the tick).
 - **Peer details and friendly names** (2026-09-06, Windows parity): every peer row carries
-  "Peer details" and "Rename peer" as explicit VoiceOver actions plus a context menu (pitfall
-  14 — no swipe actions), opening `PeerDetailsView` — machine name, the address and port,
+  "Peer details" as an explicit VoiceOver action plus a context menu (pitfall 14 — no swipe
+  actions; the separate "Rename peer" action was removed 2026-10-09 at the user's request —
+  renaming lives inside the sheet), opening `PeerDetailsView` — machine name, the address and port,
   every other path a multi-homed peer answers on, how long it has been connected, ping,
   what it is sending (codec / rate / channels / frame), whether our microphone reaches it,
   and the encryption state. The ROW keeps its one-line summary: a screen-reader user arrows
@@ -485,12 +499,20 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   which CI does not have; the real store silently no-ops when signed out, so tests against
   it would pass vacuously),
   `ReceiverRootView.swift` (shared SwiftUI — a `NavigationStack` wrapping a four-tab
-  `TabView`: **Connectivity** = status / server / peers / peers-on-the-server / add-peer
-  (the server button opens `ServerConnectView.swift`; peer rows carry details / rename /
-  remove as VoiceOver actions + context menu, opening `PeerDetailsView.swift`; its tab bar
+  `TabView`: **Connectivity** = Status / Server / Connected peers / Discovered peers (not on
+  a server) / Discovered peers on the server / Add a peer by address / "When someone ticks
+  you" (2026-10-09, Windows layout). Every one of those but Server and the accept picker is a
+  **collapsible heading** (`CollapsibleHeader`: one element, `.isHeader` + `.isButton`, value
+  "Expanded"/"Collapsed" — hand-built because `Section(isExpanded:)` only collapses in
+  sidebar lists and what VoiceOver says for `DisclosureGroup` is undocumented); Status and
+  Connected peers start open, the rest folded, not persisted. Connected = every ticked row
+  (network and server alike), discovered = the unticked ones, so a tick MOVES a row between
+  lists — the row toggle posts "<name> moved to <list>" because the focused element vanishes
+  (the server button opens `ServerConnectView.swift`; peer rows carry details / remove as
+  VoiceOver actions + context menu, opening `PeerDetailsView.swift`; its tab bar
   item exposes the live
-  traffic rates as its accessibility value, `controller.trafficSummary`; the Connection
-  section shows ONLY general status — `controller.connectionDetails` — while the technical
+  traffic rates as its accessibility value, `controller.trafficSummary`; the Status
+  heading shows ONLY general status — `controller.connectionDetails` — while the technical
   measurements live in `controller.diagnosticDetails` behind a Diagnostics button that opens
   `DiagnosticsView.swift`, because a dozen lines rewriting every second make the list
   tedious to arrow through when the question is just "am I connected". Both halves are

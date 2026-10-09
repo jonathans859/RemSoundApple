@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Everything RemSound knows about one peer, plus the rename box — reached from the peer
-/// row's "Peer details" / "Rename peer" actions (VoiceOver rotor actions and the context
-/// menu, per pitfall 14: no swipe actions).
+/// row's "Peer details" action (a VoiceOver rotor action and the context menu, per
+/// pitfall 14: no swipe actions). Renaming has no row action of its own; it lives here.
 ///
 /// The same split the Diagnostics button makes for the connection panel: a peer ROW stays one
 /// line, because a screen-reader user arrows past every row every time they open the app, and
@@ -12,9 +12,6 @@ struct PeerDetailsView: View {
     /// Read-only: @Observable tracks the reads in `body`, so no @Bindable is needed here.
     let controller: ReceiverController
     let peerId: String
-    /// Opened from the row's "Rename peer" action — start with the name field focused so the
-    /// action lands where it says it will.
-    var focusName = false
 
     @Environment(\.dismiss) private var dismiss
     @State private var nameText = ""
@@ -56,13 +53,6 @@ struct PeerDetailsView: View {
                 guard !loadedName else { return }
                 nameText = peer?.customName ?? ""
                 loadedName = true
-            }
-            .task {
-                guard focusName else { return }
-                // The field is not in the responder chain the instant the sheet appears;
-                // focusing after presentation settles is what actually takes.
-                try? await Task.sleep(for: .milliseconds(400))
-                nameFocused = true
             }
         }
     }

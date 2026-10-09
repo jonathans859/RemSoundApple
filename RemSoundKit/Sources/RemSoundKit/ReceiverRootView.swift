@@ -14,15 +14,23 @@ public struct ReceiverRootView: View {
     @FocusState private var profileNameFocused: Bool
     @State private var renamingProfileId: UUID?
     @State private var renameText = ""
-    /// Which peer's details sheet is open, and whether it opens focused on the name field
-    /// (the row's Rename action). ONE sheet at the top level rather than one per row: a
-    /// sheet or alert owned by a row misfires on macOS when the row disappears underneath it
-    /// — the same reason the profile rename alert lives on the tab, not on its row.
+    /// Which peer's details sheet is open. ONE sheet at the top level rather than one per
+    /// row: a sheet or alert owned by a row misfires on macOS when the row disappears
+    /// underneath it — the same reason the profile rename alert lives on the tab, not on its
+    /// row. (Rows move between lists when ticked, so this matters more than it used to.)
     @State private var peerDetailsRequest: PeerDetailsRequest?
+
+    // Which Connectivity headings are open. Not persisted, so every launch reads the same:
+    // Connected peers opens on its own (asked for, 2026-10-09), and so does Status, the
+    // "am I connected" answer; the lists you only visit to add someone start folded away.
+    @State private var statusExpanded = true
+    @State private var connectedExpanded = true
+    @State private var discoveredExpanded = false
+    @State private var serverPeersExpanded = false
+    @State private var addPeerExpanded = false
 
     private struct PeerDetailsRequest: Identifiable {
         let id: String
-        let focusName: Bool
     }
 
     public init(controller: ReceiverController) {
@@ -100,10 +108,13 @@ public struct ReceiverRootView: View {
                 ServerConnectView(controller: controller)
             }
             .sheet(item: $peerDetailsRequest) { request in
-                PeerDetailsView(controller: controller, peerId: request.id,
-                                focusName: request.focusName)
+                PeerDetailsView(controller: controller, peerId: request.id)
             }
         }
+        // Its own view, for the same reason as the pickers at the bottom of this file: this
+        // body re-renders every second, and a presented alert rebuilt underneath VoiceOver
+        // can lose the button the user is on.
+        .background { ConnectionRequestAlert(controller: controller) }
 #if os(iOS)
         // VoiceOver magic tap = quick mute from anywhere in the app, including with focus
         // on the tab bar. Root-level so it resolves no matter which element is focused.
@@ -115,13 +126,18 @@ public struct ReceiverRootView: View {
     }
 
     private var connectivityTab: some View {
+        // Windows parity (Connectivity tab): the people you are connected to, then the ones
+        // you could connect to — on your network, then on the server — then adding one by
+        // address. Ticking moves a row from a discovered list into Connected peers and
+        // unticking moves it back, so one list always means one thing.
         Form {
             statusSection
-            connectionSection
             serverSection
-            peersSection
+            connectedPeersSection
+            discoveredPeersSection
             serverPeersSection
             addPeerSection
+            acceptConnectionsSection
         }
         .formStyle(.grouped)
     }
@@ -326,10 +342,22 @@ public struct ReceiverRootView: View {
         }
     }
 
-    @ViewBuilder
-    private var connectionSection: some View {
-        if !controller.connectionDetails.isEmpty {
-            Section {
+    /// One heading for "am I connected": the summary, any error, the connection lines, and
+    /// the Diagnostics button.
+    private var statusSection: some View {
+        Section {
+            if statusExpanded {
+                Text(controller.statusSummary)
+                    .font(.headline)
+                    .accessibilityLabel("Status: \(controller.statusSummary)")
+                    .accessibilityAddTraits(.updatesFrequently)
+
+                if let error = controller.lastError {
+                    Text(error)
+                        .foregroundStyle(.red)
+                        .accessibilityLabel("Error: \(error)")
+                }
+
                 ForEach(Array(controller.connectionDetails.enumerated()), id: \.offset) { _, line in
                     Text(line)
                         .font(.callout)
@@ -341,28 +369,13 @@ public struct ReceiverRootView: View {
                 // user arrowing through "am I connected" should not have to pass all of it.
                 // Copying lives in the dialog, next to the numbers it copies — one button
                 // rather than two that copy the same text from different places.
-                Button("Diagnostics") { showingDiagnostics = true }
-                    .accessibilityHint("Opens packet timing, buffer depth and traffic measurements, and a button to copy them")
-            } header: {
-                Text("Connection")
-            }
-        }
-    }
-
-    private var statusSection: some View {
-        Section {
-            Text(controller.statusSummary)
-                .font(.headline)
-                .accessibilityLabel("Status: \(controller.statusSummary)")
-                .accessibilityAddTraits(.updatesFrequently)
-
-            if let error = controller.lastError {
-                Text(error)
-                    .foregroundStyle(.red)
-                    .accessibilityLabel("Error: \(error)")
+                if !controller.connectionDetails.isEmpty {
+                    Button("Diagnostics") { showingDiagnostics = true }
+                        .accessibilityHint("Opens packet timing, buffer depth and traffic measurements, and a button to copy them")
+                }
             }
         } header: {
-            Text("Status")
+            CollapsibleHeader(title: "Status", isExpanded: $statusExpanded)
         }
     }
 
@@ -422,51 +435,97 @@ public struct ReceiverRootView: View {
         }
     }
 
-    /// Peers reached directly — on the network, or at an address the user typed.
-    private var networkPeers: [PeerListEntry] { controller.peers.filter { !$0.isOnServer } }
-    /// People reached through the server, which only ever means people on our password.
-    private var serverPeers: [PeerListEntry] { controller.peers.filter { $0.isOnServer } }
+    /// Everyone ticked, wherever they are reached — on the network, at a typed address, or
+    /// through the server.
+    private var connectedPeers: [PeerListEntry] { controller.peers.filter(\.isSelected) }
+    /// Not ticked, reached directly — on the network, or at an address the user typed.
+    private var discoveredPeers: [PeerListEntry] {
+        controller.peers.filter { !$0.isSelected && !$0.isOnServer }
+    }
+    /// Not ticked, on the server — which only ever means people on our password.
+    private var discoveredServerPeers: [PeerListEntry] {
+        controller.peers.filter { !$0.isSelected && $0.isOnServer }
+    }
 
-    private var peersSection: some View {
+    /// Upstream's names: with a server in the picture the network list says which it is.
+    private var discoveredTitle: String {
+        controller.isConnectedToServer ? "Discovered peers not on a server" : "Discovered peers"
+    }
+    private static let serverPeersTitle = "Discovered peers on the server"
+    private static let connectedTitle = "Connected peers"
+
+    private var connectedPeersSection: some View {
         Section {
-            if networkPeers.isEmpty {
-                Text("No peers yet. Peers on the same network appear automatically; add an address below for Tailscale, or connect to a server above.")
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(networkPeers) { peer in
-                peerRow(peer)
+            if connectedExpanded {
+                if connectedPeers.isEmpty {
+                    Text("No connected peers. Tick someone under \(discoveredTitle), add a peer by address, or connect to a server.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(connectedPeers) { peer in
+                    peerRow(peer)
+                }
             }
         } header: {
-            Text(controller.isConnectedToServer ? "Peers not on a server" : "Peers")
+            CollapsibleHeader(title: Self.connectedTitle, count: connectedPeers.count,
+                              isExpanded: $connectedExpanded)
         } footer: {
-            Text("Tick a peer to hear its audio. Audio plays only from peers you have selected. Each peer's actions — peer details, rename, and remove for peers you added — are on the row itself, in the VoiceOver rotor's Actions or the context menu.")
+            if connectedExpanded {
+                Text("Audio plays only from the peers ticked here, and your microphone goes to them. Untick a peer to move it back to the discovered list. Each peer's actions — peer details, and remove for peers you added — are on the row itself, in the VoiceOver rotor's Actions or the context menu.")
+            }
         }
     }
 
-    /// The people on the server, in their own list right under the ordinary one — one list
-    /// means one thing, so ticking somebody here moves them out of it and into the list of
-    /// peers you are connected to, exactly as it does for somebody on your network.
+    private var discoveredPeersSection: some View {
+        Section {
+            if discoveredExpanded {
+                if discoveredPeers.isEmpty {
+                    Text("No other peers found. Peers on the same network appear here automatically; add an address below for Tailscale, or connect to a server above.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(discoveredPeers) { peer in
+                    peerRow(peer)
+                }
+            }
+        } header: {
+            CollapsibleHeader(title: discoveredTitle, count: discoveredPeers.count,
+                              isExpanded: $discoveredExpanded)
+        } footer: {
+            if discoveredExpanded {
+                Text("Tick a peer to connect to it; it moves to \(Self.connectedTitle).")
+            }
+        }
+    }
+
+    /// The people on the server who are not ticked, in their own list right under the
+    /// network one — exactly as upstream, which found that one list mixing the two made it
+    /// impossible to tell who was where.
     @ViewBuilder
     private var serverPeersSection: some View {
         if controller.isConnectedToServer {
             Section {
-                if serverPeers.isEmpty {
-                    Text(serverPeersEmptyText)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(serverPeers) { peer in
-                    peerRow(peer)
+                if serverPeersExpanded {
+                    if discoveredServerPeers.isEmpty {
+                        Text(serverPeersEmptyText)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(discoveredServerPeers) { peer in
+                        peerRow(peer)
+                    }
                 }
             } header: {
-                Text("Peers on the server")
+                CollapsibleHeader(title: Self.serverPeersTitle, count: discoveredServerPeers.count,
+                                  isExpanded: $serverPeersExpanded)
             } footer: {
-                Text("Only people using the same password as you ever appear here. Sound needs both ticks: tick someone and you hear each other as soon as they tick you back.")
+                if serverPeersExpanded {
+                    Text("Only people using the same password as you ever appear here. Sound needs both ticks: tick someone and you hear each other as soon as they tick you back.")
+                }
             }
         }
     }
 
-    /// Why the server list is empty, which is never obvious and has three quite different
-    /// causes — no password to be grouped by, no member list yet, or simply nobody else.
+    /// Why the server list is empty, which is never obvious and has four quite different
+    /// causes — no password to be grouped by, no member list yet, nobody else, or everybody
+    /// there is already in Connected peers.
     private var serverPeersEmptyText: String {
         if controller.password.isEmpty {
             return "Set a password on the Send and Receive tab. A server groups people by their password, so there is nothing to join without one."
@@ -474,7 +533,19 @@ public struct ReceiverRootView: View {
         if !controller.isInServerGroup {
             return "Waiting for the server's member list…"
         }
+        if controller.peers.contains(where: \.isOnServer) {
+            return "Everyone on this server using your password is already in \(Self.connectedTitle)."
+        }
         return "Nobody else on this server is using your password yet."
+    }
+
+    /// Said when a tick moves a row to the other list. The row VoiceOver was on disappears
+    /// from under it, so its own value change ("on") is not reliably spoken; this says where
+    /// the peer went instead.
+    private func announceMove(of peer: PeerListEntry, selected: Bool) {
+        let destination = selected ? Self.connectedTitle
+                                   : (peer.isOnServer ? Self.serverPeersTitle : discoveredTitle)
+        AccessibilityNotification.Announcement("\(peer.name) moved to \(destination)").post()
     }
 
     @ViewBuilder
@@ -486,7 +557,10 @@ public struct ReceiverRootView: View {
         // actions, which doubled up with the explicit ones.
         let toggle = Toggle(isOn: Binding(
             get: { peer.isSelected },
-            set: { controller.setPeerSelected(peer, selected: $0) }
+            set: { selected in
+                controller.setPeerSelected(peer, selected: selected)
+                announceMove(of: peer, selected: selected)
+            }
         )) {
             VStack(alignment: .leading) {
                 Text(peer.name)
@@ -499,15 +573,13 @@ public struct ReceiverRootView: View {
         .accessibilityHint(peer.isSelected ? "Selected. Double tap to stop receiving from this peer."
                                            : "Not selected. Double tap to receive audio from this peer.")
 
-        // Details and rename are actions on the row itself — the address, the paths, the
-        // ping, what the peer is sending and its encryption state are one rotor action away
-        // instead of on every row's summary line.
+        // Details is an action on the row itself — the address, the paths, the ping, what the
+        // peer is sending and its encryption state are one rotor action away instead of on
+        // every row's summary line. Renaming lives inside that sheet, so it has no action of
+        // its own (removed 2026-10-09: two actions opening the same sheet was one too many).
         let row = toggle
             .accessibilityAction(named: "Peer details") {
-                peerDetailsRequest = PeerDetailsRequest(id: peer.id, focusName: false)
-            }
-            .accessibilityAction(named: "Rename peer") {
-                peerDetailsRequest = PeerDetailsRequest(id: peer.id, focusName: true)
+                peerDetailsRequest = PeerDetailsRequest(id: peer.id)
             }
 
         Group {
@@ -522,10 +594,7 @@ public struct ReceiverRootView: View {
         }
         .contextMenu {
             Button("Peer details") {
-                peerDetailsRequest = PeerDetailsRequest(id: peer.id, focusName: false)
-            }
-            Button("Rename peer") {
-                peerDetailsRequest = PeerDetailsRequest(id: peer.id, focusName: true)
+                peerDetailsRequest = PeerDetailsRequest(id: peer.id)
             }
             if let manualId = peer.manualPeerId {
                 Button("Remove peer", role: .destructive) {
@@ -537,21 +606,37 @@ public struct ReceiverRootView: View {
 
     private var addPeerSection: some View {
         Section {
-            HStack {
-                TextField("Address or hostname", text: $newPeerHost)
-                    .focused($addPeerFocused)
-                    .autocorrectionDisabled()
+            if addPeerExpanded {
+                HStack {
+                    TextField("Address or hostname", text: $newPeerHost)
+                        .focused($addPeerFocused)
+                        .autocorrectionDisabled()
 #if os(iOS)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
 #endif
-                    .onSubmit(addPeer)
-                    .accessibilityHint("A LAN IP, Tailscale IP, or the RemSound relay hostname. The standard port is used automatically.")
-                Button("Add", action: addPeer)
-                    .disabled(newPeerHost.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .onSubmit(addPeer)
+                        .accessibilityHint("A LAN IP, Tailscale IP, or the RemSound relay hostname. The standard port is used automatically.")
+                    Button("Add", action: addPeer)
+                        .disabled(newPeerHost.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
             }
         } header: {
-            Text("Add a peer by address")
+            CollapsibleHeader(title: "Add a peer by address", isExpanded: $addPeerExpanded)
+        } footer: {
+            if addPeerExpanded {
+                Text("A peer you add appears under \(discoveredTitle) until you tick it.")
+            }
+        }
+    }
+
+    private var acceptConnectionsSection: some View {
+        Section {
+            AcceptConnectionsPicker(controller: controller)
+        } header: {
+            Text("When someone ticks you")
+        } footer: {
+            Text("Sound only ever flows once both of you have ticked each other. This decides what happens at your end when somebody ticks you first: you are asked once per person, they are ticked back straight away, or nothing happens until you tick them yourself. Someone using a different password is never offered. Unticking somebody yourself always sticks until you tick them again or restart RemSound. Kept on this device; not part of a profile.")
         }
     }
 
@@ -682,6 +767,82 @@ public struct ReceiverRootView: View {
 // Observation re-runs them only when something they actually read changes. The parent still
 // re-renders every second by design (uptime and traffic rates are live) — the isolation is
 // what keeps the open menu stable underneath it.
+
+/// What happens when somebody ticks us first — upstream's "Accept connections from other
+/// peers", in its own order (the default, Ask, first).
+private struct AcceptConnectionsPicker: View {
+    @Bindable var controller: ReceiverController
+
+    var body: some View {
+        Picker("Accept connections from other peers", selection: $controller.acceptPeerConnections) {
+            ForEach(PeerAcceptMode.allCases) { mode in
+                Text(mode.displayName).tag(mode)
+            }
+        }
+        .pickerStyle(.menu)
+        .accessibilityHint("What happens when somebody ticks you before you have ticked them")
+    }
+}
+
+/// A section heading that folds its section away. Built by hand rather than with
+/// `DisclosureGroup` or `Section(isExpanded:)`: the latter only collapses in sidebar-style
+/// lists, never in this grouped Form, and what VoiceOver says for a DisclosureGroup is not
+/// documented anywhere. This is explicit: one element, a heading (so the rotor's Headings
+/// jumps between them) that is also a button, valued "Expanded" or "Collapsed".
+/// Double-tapping changes that value, which VoiceOver speaks by itself, so there is
+/// deliberately no announcement on top of it.
+private struct CollapsibleHeader: View {
+    let title: String
+    /// How many rows the section holds, said and shown even while it is folded — the reason
+    /// to open a list is usually knowing there is somebody in it.
+    var count: Int?
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        Button {
+            withAnimation { isExpanded.toggle() }
+        } label: {
+            HStack {
+                Text(title)
+                if let count {
+                    Text("(\(count))")
+                        .monospacedDigit()
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .textCase(nil)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(count.map { "\(title), \($0)" } ?? title)
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+        .accessibilityAddTraits([.isHeader, .isButton])
+    }
+}
+
+/// Puts `ReceiverController.pendingConnectionRequest` up as a question. Its body reads only
+/// that one property, so the 1 Hz re-render of the root view never rebuilds an alert the
+/// user is in the middle of answering.
+private struct ConnectionRequestAlert: View {
+    let controller: ReceiverController
+
+    var body: some View {
+        Color.clear
+            .alert("Connection request", isPresented: Binding(
+                get: { controller.pendingConnectionRequest != nil },
+                // Answered by the buttons; a dismissal is always one of them.
+                set: { _ in }
+            ), presenting: controller.pendingConnectionRequest) { _ in
+                Button("Allow") { controller.answerConnectionRequest(allow: true) }
+                Button("Don't Allow", role: .cancel) { controller.answerConnectionRequest(allow: false) }
+            } message: { request in
+                Text("\(request.question) Do you want to allow this?")
+            }
+    }
+}
 
 private struct VolumeBoostPicker: View {
     @Bindable var controller: ReceiverController

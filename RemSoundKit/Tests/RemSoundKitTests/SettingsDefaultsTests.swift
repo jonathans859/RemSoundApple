@@ -61,6 +61,19 @@ final class SettingsDefaultsTests: XCTestCase {
 
     /// Our identity on a server is picked once and kept. If it moved, every tick anybody
     /// else had made on us would be a tick on a stranger after each launch.
+    /// Upstream's default is to ask, and an unknown stored value must not quietly become
+    /// "tick everybody back".
+    func testAcceptConnectionsDefaultsToAskingAndRoundTrips() {
+        let settings = ReceiverSettings(defaults: defaults)
+        XCTAssertEqual(settings.acceptPeerConnections, .prompt)
+
+        settings.acceptPeerConnections = .automatic
+        XCTAssertEqual(ReceiverSettings(defaults: defaults).acceptPeerConnections, .automatic)
+
+        defaults.set(99, forKey: "acceptPeerConnections")
+        XCTAssertEqual(ReceiverSettings(defaults: defaults).acceptPeerConnections, .prompt)
+    }
+
     func testRelayClientIdIsGeneratedOnceAndKept() {
         let first = ReceiverSettings(defaults: defaults).relayClientId()
         XCTAssertFalse(first.isZero, "all zero is the server's own id, never a client's")
