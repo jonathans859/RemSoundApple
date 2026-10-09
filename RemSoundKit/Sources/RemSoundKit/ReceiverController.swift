@@ -942,7 +942,8 @@ public final class ReceiverController {
     /// What a ticked server member is stored under in `selectedPeerAddresses`. Their client
     /// id, not an address: through a server everybody arrives from the server's address, and
     /// keying on the id is what makes a tick outlive their restart — and ours.
-    public static func serverSelectionKey(hex: String) -> String { "server-member-\(hex)" }
+    /// `nonisolated`: a pure string, and `PeerListEntry` (not main-actor) builds it too.
+    nonisolated public static func serverSelectionKey(hex: String) -> String { "server-member-\(hex)" }
 
     /// Go to a server. From then on we say hello to it every couple of seconds and the
     /// people on it who share our password appear in their own part of the peer list, to be

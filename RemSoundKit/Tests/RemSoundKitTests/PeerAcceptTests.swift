@@ -107,7 +107,7 @@ final class UnselectedSenderTests: XCTestCase {
         return packet
     }
 
-    private func engine(heard: @escaping (UDPEndpoint, Bool) -> Void) -> AudioReceiverEngine {
+    private func makeEngine(heard: @escaping (UDPEndpoint, Bool) -> Void) -> AudioReceiverEngine {
         let engine = AudioReceiverEngine()
         engine.setKeyMaterial(key: [UInt8](repeating: 9, count: 32), fingerprint: ours)
         engine.setAllowedSenders([friend.address])
@@ -117,7 +117,7 @@ final class UnselectedSenderTests: XCTestCase {
 
     func testAnUnselectedSenderOnOurPasswordIsReportedOnce() {
         var reports: [(UDPEndpoint, Bool)] = []
-        let engine = engine { reports.append(($0, $1)) }
+        let engine = makeEngine { reports.append(($0, $1)) }
         // Format packets repeat every 250 ms; a sender left running must not be a question
         // four times a second.
         for _ in 0..<5 {
@@ -131,7 +131,7 @@ final class UnselectedSenderTests: XCTestCase {
 
     func testADifferentPasswordIsReportedAsSuch() {
         var reports: [Bool] = []
-        let engine = engine { reports.append($1) }
+        let engine = makeEngine { reports.append($1) }
         engine.handlePacketForTesting(formatPacket(fingerprint: theirs), from: stranger)
         XCTAssertEqual(reports, [false])
     }
@@ -140,14 +140,14 @@ final class UnselectedSenderTests: XCTestCase {
     /// our password, so it is never offered either.
     func testNoFingerprintCountsAsADifferentPassword() {
         var reports: [Bool] = []
-        let engine = engine { reports.append($1) }
+        let engine = makeEngine { reports.append($1) }
         engine.handlePacketForTesting(formatPacket(fingerprint: nil), from: stranger)
         XCTAssertEqual(reports, [false])
     }
 
     func testATickedSenderIsNotReported() {
         var reports = 0
-        let engine = engine { _, _ in reports += 1 }
+        let engine = makeEngine { _, _ in reports += 1 }
         engine.handlePacketForTesting(formatPacket(fingerprint: ours), from: friend)
         XCTAssertEqual(reports, 0)
     }
@@ -156,7 +156,7 @@ final class UnselectedSenderTests: XCTestCase {
     /// upstream's gate sits in the same place.
     func testNothingIsReportedWhileReceivingIsOff() {
         var reports = 0
-        let engine = engine { _, _ in reports += 1 }
+        let engine = makeEngine { _, _ in reports += 1 }
         engine.setPlaybackEnabled(false)
         engine.handlePacketForTesting(formatPacket(fingerprint: ours), from: stranger)
         XCTAssertEqual(reports, 0)
