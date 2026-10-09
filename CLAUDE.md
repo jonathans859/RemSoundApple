@@ -160,7 +160,7 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 - v3.x protocol only; no legacy, no relay-v2 lobby, no recording.
 - Profiles (2026-07-12, user reversed the earlier "no profiles" decision): local named
   snapshots of peers + selection, password, receive/send toggles, microphone, send codec
-  (2026-09-18), max delay, auto-tune on/off (2026-08-17) —
+  (2026-09-18), max delay, auto-tune on/off (2026-08-17), accept connections (2026-10-09) —
   **`ReceiverProfile.init(from:)` is hand-written and every field after `id`/`name` decodes
   with a default — keep it that way when adding fields.** Both read paths (`ProfileStore.profiles`
   and `ProfileSync.readRemote`) decode with `try?` and treat a throw as "no profiles", so a
@@ -238,8 +238,10 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   so rather than going quiet — that is the only thing a person cannot work out alone.
 - **Accept connections from other peers** (2026-10-09, upstream `MainForm.AcceptConnections.cs`
   parity): ask each time (**default**, as upstream) / automatically / manual
-  (`PeerAcceptMode`, raw values = upstream's and stored as such). Device-local, **not in
-  profiles** (upstream keeps it machine-wide). Three triggers: a **tick proof** that opens with
+  (`PeerAcceptMode`, raw values = upstream's and stored as such). **In profiles** (user,
+  2026-10-09 — upstream keeps it machine-wide), so it syncs through iCloud with them; the live
+  value is persisted locally. Decoded from the profile as a plain Int with `.prompt` fallback,
+  never as the enum (an unknown value must not throw — see the profile-wipe rule). Three triggers: a **tick proof** that opens with
   our key (`tickProofArrived` — the row is found by the instance id the proof names), a format packet from a sender
   outside the allow-list (`AudioReceiverEngine.onUnselectedSenderHeard`, rate-limited 10 s per
   address, carries whether its fingerprint is ours — a different password or no fingerprint is

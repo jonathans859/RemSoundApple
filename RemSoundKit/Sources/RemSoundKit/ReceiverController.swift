@@ -471,7 +471,8 @@ public final class ReceiverController {
 
     /// What happens when somebody else ticks us: ask (default), tick them back at once, or
     /// nothing until the user ticks them — the Windows "Accept connections from other peers".
-    /// Device-local and not part of a profile, like upstream's machine-wide setting. Two
+    /// Part of a profile (user, 2026-10-09 — upstream keeps it machine-wide), so it also syncs
+    /// through iCloud with the profiles; the live value is persisted on this device. Two
     /// things set it off: audio arriving from somebody we have not ticked (on a network,
     /// the only sign they have ticked us), and a server's member list saying so outright.
     /// Somebody on a different password is never offered — their audio could not be played.
@@ -1431,6 +1432,7 @@ public final class ReceiverController {
         // Before the send switch below: the codec must be in place when capture starts, or
         // the first quarter-second of the stream announces the previous one.
         sendCodec = profile.sendCodec
+        acceptPeerConnections = profile.acceptPeerConnections
         password = profileStore.password(forProfile: profile.id)
         receiveEnabled = profile.receiveEnabled
         // Send last: it may start the capture pipeline (microphone permission prompt
@@ -1472,7 +1474,8 @@ public final class ReceiverController {
             targetLatencyMs: targetLatencyMs,
             autoTuneLatencyEnabled: autoTuneLatencyEnabled,
             sendCodec: sendCodec,
-            serverHost: isConnectedToServer && !serverAddress.isEmpty ? serverAddress : nil)
+            serverHost: isConnectedToServer && !serverAddress.isEmpty ? serverAddress : nil,
+            acceptPeerConnections: acceptPeerConnections)
     }
 
     private func resolveManualPeers() {

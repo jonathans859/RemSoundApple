@@ -30,13 +30,18 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
     /// the peers back but not the server would tick people who were never there. Profiles
     /// written before servers existed decode as nil, which correctly means "not on one".
     public var serverHost: String?
+    /// What happens when somebody ticks us (upstream keeps this machine-wide; here it is part
+    /// of a profile by the user's choice, 2026-10-09, so it also syncs through iCloud with
+    /// the rest). Profiles written before it existed read as `.prompt`, the default.
+    public var acceptPeerConnections: PeerAcceptMode
 
     public init(id: UUID = UUID(), name: String, manualPeers: [ManualPeer],
                 selectedPeerAddresses: [String], receiveEnabled: Bool, sendEnabled: Bool,
                 selectedMicrophoneId: String?, targetLatencyMs: Int,
                 autoTuneLatencyEnabled: Bool = false,
                 sendCodec: AudioTransportCodec = .opus,
-                serverHost: String? = nil) {
+                serverHost: String? = nil,
+                acceptPeerConnections: PeerAcceptMode = .prompt) {
         self.id = id
         self.name = name
         self.manualPeers = manualPeers
@@ -48,12 +53,13 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
         self.autoTuneLatencyEnabled = autoTuneLatencyEnabled
         self.sendCodec = sendCodec
         self.serverHost = serverHost
+        self.acceptPeerConnections = acceptPeerConnections
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, manualPeers, selectedPeerAddresses, receiveEnabled, sendEnabled
         case selectedMicrophoneId, targetLatencyMs, autoTuneLatencyEnabled, sendCodec
-        case serverHost
+        case serverHost, acceptPeerConnections
     }
 
     /// Hand-written so a field added later cannot destroy the user's profiles. Both decode
@@ -75,6 +81,10 @@ public struct ReceiverProfile: Identifiable, Hashable, Codable, Sendable {
         autoTuneLatencyEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoTuneLatencyEnabled) ?? false
         sendCodec = try container.decodeIfPresent(AudioTransportCodec.self, forKey: .sendCodec) ?? .opus
         serverHost = try container.decodeIfPresent(String.self, forKey: .serverHost)
+        // Read as a number, never as the enum: a value from a newer build would make the enum
+        // decode THROW, and a throw here is the profile-wiping failure described above.
+        acceptPeerConnections = (try? container.decodeIfPresent(Int.self, forKey: .acceptPeerConnections))
+            .flatMap(PeerAcceptMode.init(rawValue:)) ?? .prompt
     }
 }
 
@@ -233,6 +243,7 @@ public final class ProfileStore {
         // saved while not on one, correctly says "not on a server".
         settings.serverHost = profile.serverHost ?? ""
         settings.serverConnected = !(profile.serverHost ?? "").isEmpty
+        settings.acceptPeerConnections = profile.acceptPeerConnections
         settings.lastAppliedProfileId = profileId
     }
 }

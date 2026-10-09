@@ -147,4 +147,49 @@ final class ProfileCompatibilityTests: XCTestCase {
         XCTAssertTrue(settings.autoTuneLatencyEnabled)
         XCTAssertEqual(settings.targetLatencyMs, 45)
     }
+
+    // MARK: - Accept connections (in profiles since 2026-10-09)
+
+    func testLegacyProfileReadsAsAskingForConnections() {
+        defaults.set(Data(Self.legacyJson.utf8), forKey: "profiles")
+        XCTAssertEqual(ProfileStore(defaults: defaults).profiles.first?.acceptPeerConnections, .prompt)
+    }
+
+    /// A value from a newer build must not THROW — a throw is the profile-wiping failure
+    /// this file exists to prevent. It reads as the safe default instead.
+    func testAnUnknownAcceptModeDoesNotLoseTheProfile() throws {
+        let json = """
+        {"id":"8B7E0A2C-5F41-4E2B-9C3D-0A1B2C3D4E5F","name":"Future","acceptPeerConnections":9}
+        """
+        let profile = try JSONDecoder().decode(ReceiverProfile.self, from: Data(json.utf8))
+        XCTAssertEqual(profile.name, "Future")
+        XCTAssertEqual(profile.acceptPeerConnections, .prompt)
+    }
+
+    func testAcceptModeRoundTripsAndIsStoredAsUpstreamsNumber() throws {
+        let profile = ReceiverProfile(
+            name: "Open house", manualPeers: [], selectedPeerAddresses: [],
+            receiveEnabled: true, sendEnabled: false, selectedMicrophoneId: nil,
+            targetLatencyMs: 80, acceptPeerConnections: .automatic)
+        let data = try JSONEncoder().encode(profile)
+        XCTAssertEqual(try JSONDecoder().decode(ReceiverProfile.self, from: data), profile)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["acceptPeerConnections"] as? Int, 1)
+    }
+
+    func testStartupProfileAppliesTheAcceptMode() {
+        let settings = ReceiverSettings(defaults: defaults)
+        let store = ProfileStore(defaults: defaults)
+        let profile = ReceiverProfile(
+            name: "Locked down", manualPeers: [], selectedPeerAddresses: [],
+            receiveEnabled: true, sendEnabled: false, selectedMicrophoneId: nil,
+            targetLatencyMs: 80, acceptPeerConnections: .manual)
+        store.profiles = [profile]
+        settings.startupProfile = .fixed(profile.id)
+        XCTAssertEqual(settings.acceptPeerConnections, .prompt)
+
+        store.applyStartupProfile(to: settings)
+
+        XCTAssertEqual(settings.acceptPeerConnections, .manual)
+    }
 }

@@ -203,7 +203,7 @@ public struct ReceiverRootView: View {
             HStack {
                 Text("Saved profiles")
                 Spacer()
-                InfoButton(title: "Profiles", message: "A profile saves your peers, server, password, receive and send switches, microphone and its quality, and delay. Volume and the other audio options are not included.")
+                InfoButton(title: "Profiles", message: "A profile saves your peers, server, password, receive and send switches, microphone and its quality, delay, and how connections are accepted. Volume and the other audio options are not included.")
             }
         }
     }
@@ -268,6 +268,10 @@ public struct ReceiverRootView: View {
         }
         if let server = profile.serverHost, !server.isEmpty {
             parts.append("server \(server)")
+        }
+        // Only when it is not the default ask, for the same reason as the codec above.
+        if profile.acceptPeerConnections != .prompt {
+            parts.append("accepts \(profile.acceptPeerConnections == .automatic ? "automatically" : "manually")")
         }
         // With auto-tune on the stored delay is only where the tuner starts.
         parts.append(profile.autoTuneLatencyEnabled

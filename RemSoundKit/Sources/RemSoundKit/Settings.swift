@@ -162,8 +162,8 @@ public final class ReceiverSettings {
     }
 
     /// What happens when somebody else ticks us — ask (the default, as upstream), tick them
-    /// back at once, or nothing until the user ticks them. Device-local and NOT in profiles:
-    /// upstream keeps it machine-wide so it holds whichever profile is loaded. Stored as
+    /// back at once, or nothing until the user ticks them. The live value; profiles carry
+    /// their own copy (`ReceiverProfile.acceptPeerConnections`) and applying one sets this. Stored as
     /// upstream's raw value; absent (0) is `.prompt`, and an unknown one reads as `.prompt`
     /// too — asking is the choice that can never connect anybody behind the user's back.
     public var acceptPeerConnections: PeerAcceptMode {

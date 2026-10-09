@@ -3,7 +3,7 @@ import Foundation
 /// What happens when somebody else ticks us — the Windows app's "Accept connections from other
 /// peers" (upstream `PeerAcceptMode`, Preferences → General, 2026-09-20). Raw values match
 /// upstream's and are what `ReceiverSettings` stores, so they must stay put.
-public enum PeerAcceptMode: Int, CaseIterable, Identifiable, Sendable {
+public enum PeerAcceptMode: Int, CaseIterable, Identifiable, Sendable, Codable {
     /// Ask, naming who it is, and do nothing until the answer comes. The default, as upstream.
     case prompt = 0
     /// Tick them back the moment they tick us.
