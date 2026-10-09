@@ -61,6 +61,54 @@ final class AddrCheckTests: XCTestCase {
     }
 }
 
+/// The echo gate (upstream `AddrCheckEchoGate`, 6.0): answer only addresses we are talking to,
+/// at most once a second each. Answering anyone let one forged packet bounce between two
+/// RemSound devices for ever.
+final class AddrCheckEchoGateTests: XCTestCase {
+    private func challenge(_ fill: UInt8) -> [UInt8] {
+        var packet = [UInt8](RemPacket.writeHeader(type: .audio, streamId: 1, sequence: 0))
+        packet[5] = 10
+        packet.append(contentsOf: [UInt8](repeating: fill, count: 16))
+        return packet
+    }
+
+    private func run(port: UInt16, echoTargets: Set<UInt32>?, sends: Int,
+                     expectEchoes: Int, file: StaticString = #filePath, line: UInt = #line) throws {
+        let engine = AudioReceiverEngine()
+        engine.setAddressCheckEchoTargets(echoTargets)
+        try engine.start(port: port)
+        defer { engine.stop() }
+
+        let echoes = UncheckedBox(0)
+        let probe = UDPSocket(onPacket: { _, _, _, _ in echoes.value += 1 })
+        try probe.start(port: 0)
+        defer { probe.stop() }
+
+        let target = try XCTUnwrap(UDPEndpoint(host: "127.0.0.1", port: port))
+        for i in 0..<sends { XCTAssertTrue(probe.send(challenge(UInt8(i)), to: target)) }
+        // Loopback answers in well under a millisecond; a fixed wait also lets an echo that
+        // should NOT happen show up, which waiting for an expectation would cut short.
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertEqual(echoes.value, expectEchoes, file: file, line: line)
+    }
+
+    private var loopback: UInt32 { UDPEndpoint(host: "127.0.0.1", port: 1)!.address }
+
+    func testAnAddressWeTalkToIsAnswered() throws {
+        try run(port: 47933, echoTargets: [loopback], sends: 1, expectEchoes: 1)
+    }
+
+    func testAnAddressWeDoNotTalkToIsNotAnswered() throws {
+        try run(port: 47934, echoTargets: [], sends: 1, expectEchoes: 0)
+    }
+
+    /// The loop-breaker even between two copies that DO talk to each other: a burst gets one
+    /// answer, not one per packet.
+    func testABurstFromOneAddressGetsOneAnswerASecond() throws {
+        try run(port: 47935, echoTargets: [loopback], sends: 5, expectEchoes: 1)
+    }
+}
+
 /// Carries a value from the socket's receive thread to the test thread. The wait/fulfil pair
 /// is the ordering barrier; this box only satisfies the concurrency checker.
 private final class UncheckedBox<T>: @unchecked Sendable {

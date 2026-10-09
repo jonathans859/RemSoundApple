@@ -68,7 +68,11 @@ public final class PeerDiscoveryService {
         var lastSeenByAddress: [UInt32: Date]
     }
 
-    private let instanceId = UUID()
+    /// Who we are on the network this run — what we announce, and what our tick proofs name
+    /// (`TickProof`), so the far end finds the very device the proof is from. Fresh each
+    /// launch, as upstream's is.
+    public let instanceId = UUID()
+    private static let emptyId = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
     private let lock = NSLock()
     private var peers: [UUID: PeerRecord] = [:]
     private var socket: UDPSocket?
@@ -217,10 +221,16 @@ public final class PeerDiscoveryService {
         guard let message = try? JSONDecoder().decode(DiscoveryMessage.self, from: data) else { return }
         // Our own broadcasts come back to us; the InstanceId check filters them out.
         guard message.InstanceId != instanceId else { return }
+        // Upstream's TryParseAnnouncement (6.0): an all-zero id would collide with every other
+        // all-zero sender, and a port outside 1-65535 is not one anybody can be reached on —
+        // clamping 0 or 70000 to a "valid" port would aim our audio somewhere made up.
+        guard message.InstanceId != Self.emptyId,
+              (1...65535).contains(message.AudioPort) else { return }
 
         let trimmedName = message.Name.trimmingCharacters(in: .whitespaces)
-        let name = trimmedName.isEmpty ? remote.addressString : trimmedName
-        let audioPort = UInt16(clamping: message.AudioPort)
+        // Capped like upstream's: a name is spoken by VoiceOver on every row, every visit.
+        let name = trimmedName.isEmpty ? remote.addressString : String(trimmedName.prefix(128))
+        let audioPort = UInt16(message.AudioPort)
         let now = Date()
 
         var changed = false

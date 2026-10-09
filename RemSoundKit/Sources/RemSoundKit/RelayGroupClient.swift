@@ -383,6 +383,8 @@ public final class RelayGroupClient {
             return .consumed
         case .lobbyHello, .lobbyBye:
             return .consumed // ours coming back, or another member's: not for us to read
+        case .tickProof:
+            return .consumed // never sent through a server — the member list says who ticked whom
         case .format, .audio, .heartbeat, .control, .keepAlive, .addrCheck:
             break
         }

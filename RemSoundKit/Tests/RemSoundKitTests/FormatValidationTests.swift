@@ -77,10 +77,11 @@ final class FormatValidationTests: XCTestCase {
         XCTAssertEqual(parsed?.originatorTickMs, 42)
     }
 
-    /// Tick proofs (11) and the metronome (12) are types this port does not know; an unknown
-    /// type must be dropped at the header, never misread as something else.
+    /// The metronome (12) and the server-only types (13-15) are types this port does not know;
+    /// an unknown type must be dropped at the header, never misread as something else. (Tick
+    /// proofs, 11, are read — `TickProofTests`.)
     func testNewPacketTypesAreDroppedAtTheHeader() {
-        for type: UInt8 in [11, 12, 13, 14, 15] {
+        for type: UInt8 in [12, 13, 14, 15] {
             var bytes = [UInt8](RemPacket.writeHeader(type: .format, streamId: 0xFFFF, sequence: 0))
             bytes[5] = type
             bytes += [UInt8](repeating: 0, count: 53)

@@ -51,10 +51,18 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   frame 1-2880, Opus only at libopus rates; an **unknown codec is no format at all**
   (`readFormat` returns nil — it used to fall back to PCM, which would play codec 3 as noise).
   Windows sends codec 3 only to a copy that advertised the flag, never through a server.
-- **Types this port drops on purpose** (unknown → `readHeader` returns nil): **11 TickProof**
-  (sealed "I have ticked you": 53 bytes = nonce‖tag‖ct of version(1) + unix-seconds(8 LE) +
-  sender discovery instance id(16, RFC 4122 big-endian), every 5 s to each ticked non-server
-  peer — NOT implemented yet, see `.claude-notes/upstream-sync-v6.1.md`), **12 Metronome**,
+- **TickProof** (type **11**, upstream 6.0, `TickProof.swift`): "I have ticked you, and I
+  hold the password". Header type 11, streamId 0xFFFF, then 53 bytes = nonce(12)‖tag(16)‖ct of
+  version(1, =1) + unix-UTC-seconds(8 LE) + our discovery **instance id**(16, RFC 4122 order =
+  `UUID.uuid`), sealed with the AUDIO key under a **random** nonce (as upstream's
+  ControlSealing — not the audio NonceSequence). Sent every 5 s, raw (never group-framed), to
+  every path of every ticked network peer — never to a server or a member
+  (`tickProofTargets`). Received ungated by allow-list and receive switch, ≤1 per address per
+  2 s from the engine; opened by `TickProofGuard` (±10 min skew, replay memory by the first 8
+  nonce bytes). It is how a peer that only LISTENS proves the password — without sending it,
+  a Windows 6.x user is never offered our iPhone with its mic off. Pinned to upstream's
+  known-answer plaintext in `TickProofTests`.
+- **Types this port drops on purpose** (unknown → `readHeader` returns nil): **12 Metronome**,
   and the server-only **13 Timing / 14 Server status / 15 Server ping** (server-v2.14/2.16;
   14 is only ever sent to a member that pings with 15, which we never do).
 - **Crypto**: PBKDF2-HMAC-SHA256, **100 000** iterations, salts `"RemSound.v1.audio-key"`
@@ -88,9 +96,13 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   socket audio arrives on (shared NAT pinhole; also claims our relay slot).
 - **Relay address-proof** (type **10**, upstream server-v2.5): the relay cookies each newly
   seen client address; echo the packet back **verbatim to its source**, from the audio socket,
-  and **ungated by the allow-list** (the challenge comes from the relay, not a selected peer).
-  Watch-only upstream today — when the relay flips `--require-addr-check`, a client that never
-  echoes has all forwarded traffic withheld. Pinned by `AddrCheckTests`.
+  and **ungated by the allow-list** (the challenge comes from the relay, not a selected peer)
+  — but **gated on who we talk to** since 2026-10-09 (upstream 6.0 `AddrCheckEchoGate`):
+  answered only for an address the heartbeat pings, plus the server we are on (pushed BEFORE
+  the first hello — `pushAddressCheckEchoTargets`), and at most once a second per endpoint.
+  Answering anyone let one forged packet loop between two RemSound devices for ever. Since
+  server-v2.13 a client that has not echoed is in no group at all, so the server must never
+  drop out of that set. Pinned by `AddrCheckTests` / `AddrCheckEchoGateTests`.
   Receiving one is also the **only** way to tell that an address is a server — nothing else
   sends them (`AudioReceiverEngine.onAddrCheckReceived`).
 - **Server groups** (header version **2**, upstream server-v2.9 / Windows 6.0, notes dropped
@@ -227,12 +239,18 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 - **Accept connections from other peers** (2026-10-09, upstream `MainForm.AcceptConnections.cs`
   parity): ask each time (**default**, as upstream) / automatically / manual
   (`PeerAcceptMode`, raw values = upstream's and stored as such). Device-local, **not in
-  profiles** (upstream keeps it machine-wide). Two triggers: a format packet from a sender
+  profiles** (upstream keeps it machine-wide). Three triggers: a **tick proof** that opens with
+  our key (`tickProofArrived` — the row is found by the instance id the proof names), a format packet from a sender
   outside the allow-list (`AudioReceiverEngine.onUnselectedSenderHeard`, rate-limited 10 s per
   address, carries whether its fingerprint is ours — a different password or no fingerprint is
   never offered; nothing fires while receive is off), and a roster member with `ticksUs` or the
   server's pair partner, reviewed in the **functional** half of the tick
-  (`reviewServerTicks`). The server's own address is never offered as a person. One question
+  (`reviewServerTicks`). A server's own address is never offered as a person — nor any server
+  we have been on this run (`knownServerAddresses`; upstream accepted its own server after
+  leaving it). An untick on ANY of a peer's paths refuses all of them. Deliberately NOT
+  ported: upstream's 2-minute "different password" memory and "a device ticked before pinged
+  again" (every trigger here already proves the password; the latter was upstream's stopgap
+  until the phones sent tick proofs). One question
   at a time (`pendingConnectionRequest`, an alert hosted in its own view so the 1 Hz re-render
   cannot rebuild it); the macOS app opens its window for it via `onConnectionRequestPending`.
   `PeerAcceptPolicy` (pure, `PeerAcceptTests`) holds upstream's two hard-won rules: **asked

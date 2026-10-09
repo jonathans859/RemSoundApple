@@ -91,7 +91,22 @@ public final class AudioReceiverEngine {
     /// `unselectedSenderInterval` for any one address, so a peer left sending cannot turn
     /// into a stream of questions. Wire BEFORE start().
     public var onUnselectedSenderHeard: ((_ remote: UDPEndpoint, _ samePassword: Bool) -> Void)?
+    /// A tick proof (type 11) arrived, unopened — the app holds the key and the replay memory.
+    /// At most one per address every `tickProofInterval` reaches it (a peer sends one every
+    /// five), so a flood costs a dictionary lookup here, not a decryption there. Network thread.
+    public var onTickProofReceived: ((_ payload: ArraySlice<UInt8>, _ remote: UDPEndpoint) -> Void)?
     public var onDiagnostic: ((String) -> Void)?
+
+    public static let tickProofInterval: TimeInterval = 2
+    /// Last tick proof passed on per address, under `lock`.
+    private var tickProofNoted: [UInt32: Date] = [:]
+
+    /// Addresses we answer address checks for — everyone we ping. nil answers everybody, which
+    /// is only ever the state before the app has said who it talks to. Under `lock`.
+    private var addrCheckEchoTargets: Set<UInt32>?
+    /// Last address check handled per endpoint, under `lock`: at most one a second each.
+    private var addrCheckLast: [UDPEndpoint: Date] = [:]
+    public static let addrCheckInterval: TimeInterval = 1
 
     public static let unselectedSenderInterval: TimeInterval = 10
     /// Last report per address, under `lock`.
@@ -345,18 +360,26 @@ public final class AudioReceiverEngine {
             onHeartbeatReceived?(buffer[payloadStart..<length], source)
         case .addrCheck:
             // Relay address-proof: echo the packet back to its source, verbatim, from this
-            // same socket. Deliberately NOT gated on the allow-list — the challenge comes from
-            // the relay, which the user need not have selected as a peer, and refusing to echo
-            // costs us every relayed stream once the relay enforces. Safe to answer blind: the
-            // reply is byte-identical to what arrived and goes only to the sender's own address,
-            // so it can neither amplify nor be aimed at a third party.
+            // same socket. NOT gated on the allow-list — the challenge comes from the server,
+            // which is a place rather than a selected peer, and refusing to echo costs us every
+            // relayed stream (and, since server-v2.13, our place in any group at all).
             //
             // Back to `remote`, the datagram's real source, and raw: the echo proves THIS
             // address receives, so it must not be dressed up as group traffic (spec: "echo
             // address checks back exactly as they came, never in group framing"). Receiving
             // one is also the giveaway that an address is a server — only a server sends them.
-            sendRawFromAudioSocket(Array(buffer[0..<length]), to: remote)
+            //
+            // Gated since upstream 6.0 (`AddrCheckEchoGate`): answered only to an address we are
+            // talking to, at most once a second each. Answering every check from anyone meant one
+            // forged packet — A's address sent to B — bounced between two RemSound devices for
+            // ever. A server only ever checks an address that has sent it something, and every
+            // address we send to is one we ping, so the server we are on is always in the set.
+            let decision = addrCheckDecision(for: remote)
+            guard decision.fresh else { return }
+            if decision.echo { sendRawFromAudioSocket(Array(buffer[0..<length]), to: remote) }
             onAddrCheckReceived?(remote)
+        case .tickProof:
+            noteTickProof(buffer[payloadStart..<length], from: source)
         case .keepAlive, .control:
             break // legacy / not handled in v1 — silently ignored, wire-safe
         case .lobbyHello, .lobbyRoster, .lobbyFull, .lobbyBye:
@@ -528,6 +551,43 @@ public final class AudioReceiverEngine {
             onDiagnostic?("session pruned (idle): \(session.endpoint) stream=\(session.streamId)")
         }
         if !removed.isEmpty { onSessionsChanged?() }
+    }
+
+    /// Who we answer address checks for: every address we ping (pushed by the app on every
+    /// selection change). A server checks only addresses that send it something, so this
+    /// MUST include the server we are on — without the echo, server-v2.13 lists us nowhere.
+    public func setAddressCheckEchoTargets(_ addresses: Set<UInt32>?) {
+        lock.lock()
+        addrCheckEchoTargets = addresses
+        lock.unlock()
+    }
+
+    /// `fresh`: not handled from this endpoint in the last second (a flood, or the same check
+    /// twice, goes no further). `echo`: answer it — we are talking to that address.
+    private func addrCheckDecision(for remote: UDPEndpoint) -> (fresh: Bool, echo: Bool) {
+        let now = Date()
+        lock.lock()
+        defer { lock.unlock() }
+        if let last = addrCheckLast[remote], now.timeIntervalSince(last) < Self.addrCheckInterval {
+            return (false, false)
+        }
+        if addrCheckLast.count >= 256 { addrCheckLast.removeAll() }
+        addrCheckLast[remote] = now
+        return (true, addrCheckEchoTargets?.contains(remote.address) ?? true)
+    }
+
+    private func noteTickProof(_ payload: ArraySlice<UInt8>, from remote: UDPEndpoint) {
+        guard let handler = onTickProofReceived else { return }
+        let now = Date()
+        lock.lock()
+        let due = now.timeIntervalSince(tickProofNoted[remote.address] ?? .distantPast)
+            >= Self.tickProofInterval
+        if due {
+            if tickProofNoted.count >= 1024 { tickProofNoted.removeAll() }
+            tickProofNoted[remote.address] = now
+        }
+        lock.unlock()
+        if due { handler(payload, remote) }
     }
 
     /// Last diagnostic for an unusable format, under `lock`. Rate-limited because a corrupted

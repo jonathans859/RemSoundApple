@@ -527,6 +527,9 @@ public final class ReceiverController {
     /// **group tag** — the server groups by it and nothing else. nil while there is no
     /// password, or while the first derivation is still running.
     private var currentFingerprint: [UInt8]?
+    /// The live audio key, kept for tick proofs (`TickProof`) — sealing ours and opening
+    /// theirs. nil exactly when `currentFingerprint` is.
+    private var currentKey: [UInt8]?
     /// The last few things the server told us, newest last — surfaced in the Diagnostics
     /// panel so a group that will not form leaves a trail to read.
     private var serverLog: [String] = []
@@ -569,6 +572,20 @@ public final class ReceiverController {
     private var acceptPolicy = PeerAcceptPolicy()
     /// What answering yes to `pendingConnectionRequest` does.
     private var pendingAcceptance: (@MainActor () -> Void)?
+    /// Opens tick proofs and refuses a replayed one. See `TickProofGuard`.
+    private var tickProofGuard = TickProofGuard()
+    /// The peers we tell, every `TickProof.sendInterval`, that we have ticked them: every path
+    /// of every ticked peer on a network — never a server, nor anybody reached through one
+    /// (its member list already says who ticked whom). Rebuilt in `applyPeerSelection`.
+    private var tickProofTargets: [UDPEndpoint] = []
+    private var nextTickProof = Date.distantPast
+    private var tickProofSequence: UInt32 = 0
+    /// Every server we have been on this run. A server's address is never a person, even
+    /// after we leave it — upstream accepted its own server as a peer once (Ed, 2026-10-01).
+    private var knownServerAddresses: Set<UInt32> = []
+    /// Every address the heartbeat pings, as of the last `applyPeerSelection` — "who we are
+    /// talking to", for the address-check echo gate.
+    private var pingedAddresses: Set<UInt32> = []
     private var refreshTask: Task<Void, Never>?
     /// Whether a UI is currently on screen (battery finding 2). Defaults to false so a
     /// menu-bar macOS launch — window closed — does no presentation work until the window
@@ -695,6 +712,10 @@ public final class ReceiverController {
             Task { @MainActor [weak self] in
                 self?.someoneWantsToConnect(from: remote, samePassword: samePassword)
             }
+        }
+        engine.onTickProofReceived = { [weak self] payload, remote in
+            let bytes = Array(payload)
+            Task { @MainActor [weak self] in self?.tickProofArrived(bytes[...], from: remote) }
         }
         relayGroup.onChanged = { [weak self] in
             Task { @MainActor [weak self] in
@@ -862,6 +883,7 @@ public final class ReceiverController {
             engine.setKeyMaterial(key: nil, fingerprint: nil)
             sendEngine.setKeyMaterial(key: nil, fingerprint: nil)
             currentFingerprint = nil
+            currentKey = nil
             relayGroup.setIdentity(name: Self.deviceName(), passwordFingerprint: nil)
             updateServerStatus()
             return
@@ -877,6 +899,7 @@ public final class ReceiverController {
                 self.engine.setKeyMaterial(key: key, fingerprint: fingerprint)
                 self.sendEngine.setKeyMaterial(key: key, fingerprint: fingerprint)
                 self.currentFingerprint = fingerprint
+                self.currentKey = key
                 // The same eight bytes are the server's group tag, so a password change is a
                 // move to a different group: the client resends its hello at once with the
                 // new tag and an empty tick list.
@@ -1026,6 +1049,9 @@ public final class ReceiverController {
                     return
                 }
                 self.serverEndpoint = endpoint
+                self.knownServerAddresses.insert(endpoint.address)
+                // Before the hello: the server's address check answers it.
+                self.pushAddressCheckEchoTargets()
                 self.relayGroup.setIdentity(name: Self.deviceName(),
                                             passwordFingerprint: self.currentFingerprint)
                 self.relayGroup.connect(to: endpoint)
@@ -1139,21 +1165,68 @@ public final class ReceiverController {
 
     /// Somebody not ticked here is sending us audio on a network, so they have ticked us.
     private func someoneWantsToConnect(from remote: UDPEndpoint, samePassword: Bool) {
-        guard isRunning, samePassword else { return }
-        // A server's own address is not a person: the people behind it arrive in its member
-        // list with names of their own, and its pair partner is asked about from there.
-        if let serverEndpoint, serverEndpoint.address == remote.address { return }
+        guard samePassword else { return }
+        considerAccepting(remote, row: nil)
+    }
+
+    /// A tick proof: somebody has ticked us and says they hold our password. If it opens
+    /// with OUR key, they do — which covers the peer that only listens and so sends no
+    /// format packet to prove it. Found as the very device the proof names (its discovery
+    /// instance id), never merely by address: two phones can both be called "iPhone".
+    private func tickProofArrived(_ payload: ArraySlice<UInt8>, from remote: UDPEndpoint) {
+        guard isRunning, acceptPeerConnections != .manual, let key = currentKey else { return }
+        guard case .accepted(let instanceId) = tickProofGuard.check(key: key, payload: payload,
+                                                                    now: Date())
+        else { return } // another password, stale, or replayed: never offered
+        considerAccepting(remote, row: peers.first { $0.id == "d-\(instanceId)" })
+    }
+
+    /// The one decision both signs of a connection on a network come to: not a server, not
+    /// already ticked, not unticked by the user — then the setting decides. `row` is the row
+    /// the sign itself names, when it names one; otherwise the row at that address, if any.
+    private func considerAccepting(_ remote: UDPEndpoint, row named: PeerListEntry?) {
+        guard isRunning else { return }
+        // A server's own address is not a person, whether or not we are on it now: the people
+        // behind it arrive in its member list with names of their own, and its pair partner
+        // is asked about from there.
+        if knownServerAddresses.contains(remote.address)
+            || serverEndpoint?.address == remote.address { return }
         if peers.contains(where: { $0.isOnServer && $0.addresses.contains(remote.address) }) { return }
         let address = remote.addressString
-        let row = peers.first { !$0.isOnServer && $0.addresses.contains(remote.address) }
+        let row = named ?? peers.first { !$0.isOnServer && $0.addresses.contains(remote.address) }
         if row?.isSelected == true || selectedAddresses.contains(address) { return }
+        // Unticked by the user on ANY of its paths: a multi-homed peer must not get back in by
+        // proving itself from its other address.
+        if let row, acceptKeys(for: row).contains(where: { acceptPolicy.refusedByUser.contains($0) }) {
+            return
+        }
 
         let who = row.map { "\($0.name) at \(address)" } ?? address
         let rowId = row?.id
-        offerConnection(key: PeerAcceptPolicy.networkKey(address: address),
+        // Asked about under the row's primary address when there is a row, so the two signs
+        // and a peer's two paths are one question, not several.
+        offerConnection(key: PeerAcceptPolicy.networkKey(address: row?.addressString ?? address),
                         question: "\(who) would like to connect to you.",
                         name: who) { [weak self] in
             self?.acceptNetworkPeer(rowId: rowId, address: address)
+        }
+    }
+
+    /// Every few seconds, a sealed proof to each peer we have ticked on a network. Nothing
+    /// without a password: there is nothing to prove. Functional half of the tick, so it
+    /// keeps going with the screen locked — that is exactly when a phone is only listening.
+    private func sendTickProofsIfDue() {
+        guard isRunning, let key = currentKey, !tickProofTargets.isEmpty else { return }
+        let now = Date()
+        guard now >= nextTickProof else { return }
+        nextTickProof = now.addingTimeInterval(TickProof.sendInterval)
+        tickProofSequence &+= 1
+        guard let packet = TickProof.buildPacket(key: key, instanceId: discovery.instanceId,
+                                                 unixSeconds: Int64(now.timeIntervalSince1970),
+                                                 sequence: tickProofSequence) else { return }
+        // Raw: a proof never goes through a server's group framing.
+        for target in tickProofTargets {
+            engine.sendRawFromAudioSocket(packet, to: target)
         }
     }
 
@@ -1486,6 +1559,12 @@ public final class ReceiverController {
             if groups[grace.endpoint.address] == nil { groups[grace.endpoint.address] = grace.identity }
         }
 
+        // Everything tracked so far is a ticked peer on a network — exactly who our tick proofs
+        // go to. Servers and the people behind them are added below and must not get one.
+        tickProofTargets = tracked.filter {
+            $0.address != serverEndpoint?.address && !knownServerAddresses.contains($0.address)
+        }
+
         // People on a server. Each has a stand-in address of their own, which is what the
         // allow-list gates and the heartbeat pings; the tick itself goes to the server in
         // the hello, and that — not the allow-list — is what decides who hears whom, in both
@@ -1522,6 +1601,17 @@ public final class ReceiverController {
         engine.setAllowedSenders(allowed)
         heartbeat.setTrackedPeers(tracked)
         discovery.setUnicastPeerAddresses(unicast)
+        pingedAddresses = Set(tracked.map(\.address))
+        pushAddressCheckEchoTargets()
+    }
+
+    /// Answer address checks from everyone we ping, and from the server we are on even in the
+    /// moment before the first ping goes out — its check can beat our next selection pass, and
+    /// since server-v2.13 an unanswered one keeps us out of every group.
+    private func pushAddressCheckEchoTargets() {
+        var targets = pingedAddresses
+        if let serverEndpoint { targets.insert(serverEndpoint.address) }
+        engine.setAddressCheckEchoTargets(targets)
     }
 
     // MARK: - Periodic refresh
@@ -1566,6 +1656,7 @@ public final class ReceiverController {
         resolveServerIfNeeded()
         refreshPeerList()
         reviewServerTicks()
+        sendTickProofsIfDue()
         updateCues()
         updateSendTargets()
         updateIOBufferDemand()

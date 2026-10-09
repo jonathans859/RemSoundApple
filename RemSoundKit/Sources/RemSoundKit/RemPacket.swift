@@ -37,6 +37,13 @@ public enum RemPacketType: UInt8 {
     /// relay currently runs this watch-only, but once it flips `--require-addr-check` an
     /// endpoint that never echoes gets ALL forwarded traffic withheld — so we must answer.
     case addrCheck = 10
+    /// "I have ticked you, and I hold the password" (upstream 6.0, 2026-09-25): sealed with
+    /// the audio key, sent every 5 s to each peer we have ticked, so the other end's Accept
+    /// connections setting can act on a peer that only listens. See `TickProof`. Never
+    /// through a server — its member list already says who has ticked whom.
+    case tickProof = 11
+    // 12 (metronome) and the server-only 13-15 are deliberately absent: an unknown type is
+    // dropped at the header, which is exactly what we want for them.
 }
 
 public enum HeartbeatKind: UInt8 {
