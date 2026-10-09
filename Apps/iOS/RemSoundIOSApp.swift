@@ -1,5 +1,6 @@
 import RemSoundKit
 import SwiftUI
+import UIKit
 
 /// iOS receiver app. The `audio` background mode in Info.plist plus the always-running
 /// AVAudioEngine output keep reception alive in the background and on the lock screen.
@@ -13,6 +14,9 @@ struct RemSoundIOSApp: App {
     /// same receiver this UI shows.
     private let controller = ReceiverController.shared
     @Environment(\.scenePhase) private var scenePhase
+    /// Home screen quick actions (long-press the icon → a saved profile) arrive through the
+    /// UIKit delegates below; SwiftUI has no hook of its own for them.
+    @UIApplicationDelegateAdaptor(QuickActionAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup {
@@ -34,5 +38,34 @@ struct RemSoundIOSApp: App {
                     controller.setUIVisible(phase == .active)
                 }
         }
+    }
+}
+
+/// Cold launch from a home screen quick action: the chosen item comes with the scene's
+/// connection options, which this sees before the scene (and so before the view's `.task`
+/// that starts the receiver) exists. Applying the profile here is what makes it take the
+/// place of the launch profile rather than follow it.
+@MainActor
+final class QuickActionAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        if let item = options.shortcutItem {
+            ReceiverController.shared.handleQuickAction(item)
+        }
+        let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        configuration.delegateClass = QuickActionSceneDelegate.self
+        return configuration
+    }
+}
+
+/// The app was already running (in the background, as it usually is) when the quick action
+/// was chosen.
+@MainActor
+final class QuickActionSceneDelegate: NSObject, UIWindowSceneDelegate {
+    func windowScene(_ windowScene: UIWindowScene,
+                     performActionFor shortcutItem: UIApplicationShortcutItem,
+                     completionHandler: @escaping (Bool) -> Void) {
+        completionHandler(ReceiverController.shared.handleQuickAction(shortcutItem))
     }
 }

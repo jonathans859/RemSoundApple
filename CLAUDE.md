@@ -210,6 +210,17 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   re-enter `start()` during startup. Every profile field (send included, now persisted)
   is covered by that rewrite; capture itself resumes via `startupSendPending` at the end
   of the first `start()`.
+  **Home screen quick actions** (iOS, user 2026-10-09): long-pressing the icon lists the
+  first four profiles (`updateHomeScreenActions`, rebuilt on every `profiles` change and at
+  `start()`); choosing one launches the app with THAT profile instead of the launch one.
+  Cold launch: `QuickActionAppDelegate.configurationForConnecting` (Apps/iOS) calls
+  `handleQuickAction` → `applyProfile` AFTER `init` but BEFORE the view's `.task` runs
+  `start()` — safe, it is the stopped-receiver equivalent of a tap (its didSets may call
+  `start()` themselves, which the later `.task` then no-ops). Two things make the chosen
+  profile win outright and must stay in `applyProfile`: it clears `startupSendPending`
+  (else the launch state's send-on resumes the mic behind a profile that has it off), and
+  with no server it clears `settings.serverConnected` even when not yet connected (else
+  `start()` goes to the launch state's server). Warm: `QuickActionSceneDelegate`.
 - **Servers (relay groups)** (2026-10-02, upstream server-v2.9 parity): a server is **somewhere
   you go, not a peer you add** — one "Connect to server" button on Connectivity opens
   `ServerConnectView` (Windows layout, 2026-10-09: **Remembered servers first**, always shown,

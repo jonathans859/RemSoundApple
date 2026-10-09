@@ -223,7 +223,13 @@ public final class ReceiverController {
     public private(set) var trafficSummary = ""
     /// Saved configuration snapshots (Profiles tab). Mutated only through the profile
     /// methods below, which keep `ProfileStore` in sync.
-    public private(set) var profiles: [ReceiverProfile] = []
+    public private(set) var profiles: [ReceiverProfile] = [] {
+        didSet {
+#if os(iOS)
+            if profiles != oldValue { updateHomeScreenActions() }
+#endif
+        }
+    }
     /// The profile the settings last came from (applied, saved, or updated) — the
     /// candidate for the "currently applied" marker. `appliedProfile` re-checks it
     /// against the live configuration, so the marker drops the moment settings drift.
@@ -890,6 +896,9 @@ public final class ReceiverController {
         discovery.setCapabilities(canSend: sendEnabled, canReceive: receiveEnabled)
         isRunning = true
         eventLog.event("listening on port \(settings.listenPort)")
+#if os(iOS)
+        updateHomeScreenActions()
+#endif
         applyRemoteControls()
         applyPeerSelection()
         resolveManualPeers()
@@ -1601,6 +1610,11 @@ public final class ReceiverController {
         // Applying a profile is an explicit user tap, so a profile with sending on turning
         // the mic on here does not break the "mic never goes hot at launch" rule.
         sendEnabled = profile.sendEnabled
+        // This profile decides the send switch. A resume still pending from launch (the
+        // persisted or startup-profile send state, honoured at the end of the first start())
+        // must not turn the microphone back on behind it — which is exactly what happens when
+        // a home-screen quick action applies a profile before the receiver has started.
+        startupSendPending = false
         // The server last, like the send switch: by now the password the group tag comes
         // from is in place, and the ticks restored above take effect the moment the member
         // list names those people — a tick belongs to a person, not to a moment.
@@ -1608,6 +1622,10 @@ public final class ReceiverController {
             connectToServer(host: host, remember: false)
         } else if isConnectedToServer {
             disconnectFromServer()
+        } else {
+            // Not there yet but due to go at start() (the launch state said so): this
+            // profile says no server, so the receiver must not go there when it starts.
+            settings.serverConnected = false
         }
         markApplied(profile.id)
         applyPeerSelection()
@@ -1616,6 +1634,44 @@ public final class ReceiverController {
         eventLog.event("profile applied: \(profile.name)")
         announce("Profile \(profile.name) applied")
     }
+
+#if os(iOS)
+    /// The home screen quick action type for "start with this profile".
+    public static let quickActionType = "com.jonathan859.remsound.start-profile"
+
+    /// Long-press the app icon → the saved profiles (user, 2026-10-09). iOS shows at most
+    /// four, so the first four in the list. Rebuilt whenever the profiles change.
+    private func updateHomeScreenActions() {
+        UIApplication.shared.shortcutItems = profiles.prefix(4).map { profile in
+            UIApplicationShortcutItem(
+                type: Self.quickActionType,
+                localizedTitle: profile.name,
+                localizedSubtitle: nil,
+                icon: UIApplicationShortcutIcon(systemImageName: "bookmark"),
+                userInfo: ["profileId": profile.id.uuidString as NSString])
+        }
+    }
+
+    /// A home screen quick action was chosen: apply that profile. On a cold launch the app
+    /// delegate calls this before the receiver starts, so the chosen profile takes the place
+    /// of the launch one rather than following it — see `applyProfile`'s pending-send and
+    /// server handling. Returns false for anything that is not ours or names a profile that
+    /// has since been deleted (the item can outlive it until the list is rebuilt).
+    @discardableResult
+    public func handleQuickAction(_ item: UIApplicationShortcutItem) -> Bool {
+        guard item.type == Self.quickActionType,
+              let raw = item.userInfo?["profileId"] as? String,
+              let id = UUID(uuidString: raw),
+              let profile = profiles.first(where: { $0.id == id })
+        else {
+            eventLog.event("home screen: quick action for a profile that no longer exists")
+            return false
+        }
+        eventLog.event("home screen: start with profile \(profile.name)")
+        applyProfile(id: id)
+        return true
+    }
+#endif
 
     /// Record which profile the settings now come from — persisted (feeds the
     /// "last applied" launch mode) and published (feeds the applied marker).
