@@ -305,12 +305,6 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 - **Headset transport controls** (2026-08-20, `RemoteTransportControls.swift`): an AirPods
   stem press, a Mac media key, or the lock-screen / Control Center play-pause button pauses
   and resumes **`receiveEnabled`** (not mute — the sender should see an honest CanReceive).
-  **Next track toggles `sendEnabled`** (user, 2026-10-09): AirPods double-press, the Mac's
-  fast-forward key, ⏭ on the lock screen / Control Center — `handleNextTrack`, its own 0.5 s
-  gate separate from play/pause. The send didSet supplies the cue and re-publishes the
-  now-playing line ("Receiving…, microphone on/off"); capture start/stop does the VoiceOver
-  announcing, only when it really happened. `skipForwardCommand` must stay disabled — enabled
-  it replaces ⏭ with "skip 15 s".
   Setting `headsetTransportControls`, default **on**, device-local, not in profiles — but
   inert on iOS while "Don't mix with other sounds" is off (pitfall 9). Two
   halves are both required and neither is optional: registered `MPRemoteCommandCenter`
@@ -332,8 +326,13 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   **There is no equivalent while mixing is on** (pitfall 9): a `.mixWithOthers` session is
   never eligible, so no re-publish can reclaim anything, and making the toggle adaptive
   would reintroduce the interruption it exists to prevent (we can only react *after* the
-  other app starts). Seek/scrub/skip stay disabled; next track is the microphone switch
-  (above); previous track is registered but changes nothing (recorded for Diagnostics).
+  other app starts). Seek/scrub/skip stay disabled; next/previous are
+  registered but change nothing (an AirPods double-press is "next track").
+  **Tried and removed (2026-10-09): next track as the microphone switch.** On iPhone it
+  fails exactly where it is wanted: iOS will not START microphone capture from the
+  background / lock screen (`AVAudioEngine.start` → `'what'` 2003329396), so it could only
+  ever turn the mic off. A mute variant (capture keeps running, the press gates what is sent)
+  was offered and declined — do not re-add either without asking.
   **Confirmed trap: `MPNowPlayingInfoPropertyIsLiveStream` must stay UNset.** It puts a stop
   button where pause would be, and a routed stop ends the now-playing session — with it set,
   Control Center could pause but never resume. Never "fix" the missing scrubber by declaring
@@ -390,8 +389,7 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   be self explanatory"): no explanatory footers or accessibility hints that restate a
   control. Where a consequence genuinely is not obvious, an `InfoButton` (ⓘ, "About …",
   opens a short alert) sits next to the control — today only microphone quality, "Don't mix
-  with other sounds", headset/lock-screen controls (which button does what), Saved profiles,
-  and iCloud sync. Exceptions kept on purpose: the
+  with other sounds", Saved profiles, and iCloud sync. Exceptions kept on purpose: the
   server list's empty-state reason, the headset toggle's "Needs …" note, the password
   footer, and the magic-tap hint on the Audio tab (it teaches a gesture). Add an ⓘ before
   adding a paragraph.

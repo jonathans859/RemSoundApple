@@ -239,7 +239,6 @@ public final class ReceiverController {
             // In the didSet, so the cue follows the state wherever it was moved from —
             // the toggle, the menu bar, a Shortcut, or a profile being applied.
             cues.play(sendEnabled ? .sendOn : .sendOff)
-            updateNowPlaying()
         }
     }
 
@@ -329,14 +328,6 @@ public final class ReceiverController {
         announce(enabled ? "Receiving audio" : "Receiving paused")
     }
 
-    /// Next track (AirPods double-press, fast-forward key, ⏭) flips the microphone. The
-    /// didSet plays the send on/off cue and re-publishes the lock-screen line. No announcement
-    /// here: `beginCapture` / `stopSending` already announce, and only once capture really
-    /// started or stopped — a denied microphone plays the on cue then the off cue instead.
-    private func toggleSendFromTransport() {
-        sendEnabled.toggle()
-    }
-
     /// Whether the app may claim the system transport at all. On iOS that takes the
     /// exclusive session on top of the setting: a `.mixWithOthers` app is not eligible to be
     /// the Now Playing app, so with mixing on the press goes to whatever else is playing no
@@ -385,10 +376,9 @@ public final class ReceiverController {
     /// Push the receive state to the lock screen / Control Center. Cheap and change-gated
     /// inside `RemoteTransportControls`, and deliberately NOT on the 1 Hz tick.
     private func updateNowPlaying() {
-        // Read aloud on the lock screen, so both switches the transport moves are in it.
         remoteControls.update(
             isPlaying: receiveEnabled,
-            detail: "\(receiveEnabled ? "Receiving" : "Receiving paused"), microphone \(sendEnabled ? "on" : "off")")
+            detail: receiveEnabled ? "Receiving audio" : "Receiving paused")
     }
 
     public var targetLatencyMs: Int {
@@ -694,7 +684,6 @@ public final class ReceiverController {
             guard let self else { return }
             self.setReceiveFromTransport(!self.receiveEnabled)
         }
-        remoteControls.onNextTrack = { [weak self] in self?.toggleSendFromTransport() }
 
         output.onDiagnostic = { [weak self] message in
             Task { @MainActor [weak self] in self?.lastAudioEvent = (message, Date()) }
