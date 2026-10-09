@@ -627,7 +627,10 @@ public struct ReceiverRootView: View {
                 InfoButton(title: "Don't mix with other sounds", message: "On: RemSound and other apps interrupt each other, and RemSound keeps playing with the screen locked. Headset buttons only work while this is on.\n\nOff: RemSound plays alongside other apps, but iOS may stop it once the screen has been locked for a while.")
             }
 
-            Toggle("Pause with headset or lock screen", isOn: $controller.headsetTransportControls)
+            HStack {
+                Toggle("Headset and lock screen controls", isOn: $controller.headsetTransportControls)
+                InfoButton(title: "Headset and lock screen controls", message: "Play/pause turns receiving on and off.\n\nNext track turns the microphone on and off: double-press an AirPod, or use ⏭ on the lock screen or in Control Center.")
+            }
             // Not disabled, just explained: the preference is worth keeping for whenever
             // sole control goes back on, and a dimmed switch says less than the sentence.
             if controller.headsetTransportControls && !controller.exclusiveAudio {
@@ -636,7 +639,10 @@ public struct ReceiverRootView: View {
                     .foregroundStyle(.secondary)
             }
 #else
-            Toggle("Pause with headset or media keys", isOn: $controller.headsetTransportControls)
+            HStack {
+                Toggle("Headset and media keys", isOn: $controller.headsetTransportControls)
+                InfoButton(title: "Headset and media keys", message: "Play/pause turns receiving on and off.\n\nNext track turns the microphone on and off: double-press an AirPod, or press the fast-forward key.")
+            }
 #endif
         }
     }

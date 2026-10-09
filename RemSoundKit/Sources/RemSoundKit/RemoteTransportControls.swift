@@ -40,6 +40,8 @@ public final class RemoteTransportControls {
     public var onPause: (() -> Void)?
     /// A press the accessory did not resolve to a direction — flip whatever we are doing.
     public var onToggle: (() -> Void)?
+    /// Next track pressed (AirPods double-press, fast-forward key, ⏭): flip the microphone.
+    public var onNextTrack: (() -> Void)?
 
     private var isActive = false
     /// Last published (playing, detail) pair, so an unchanged update does no IPC.
@@ -96,23 +98,24 @@ public final class RemoteTransportControls {
             }
             return .success
         }
-        // Registered ONLY to be observed: an AirPods double-press is "next track", and if a
-        // single press is arriving as one of these we need to see it rather than infer it.
-        // Deliberately no state change — skipping means nothing for a live stream.
+        // Next track is the microphone switch (user, 2026-10-09): an AirPods double-press, the
+        // Mac's fast-forward key, and the ⏭ on the lock screen and in Control Center all
+        // arrive as this. Skipping means nothing for a live stream, so the button is free.
         center.nextTrackCommand.isEnabled = true
         _ = center.nextTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.record("next track") }
+            Task { @MainActor in self?.handleNextTrack() }
             return .success
         }
+        // Registered ONLY to be observed (an AirPods triple-press). No state change.
         center.previousTrackCommand.isEnabled = true
         _ = center.previousTrackCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.record("previous track") }
             return .success
         }
-        // Everything else is explicitly OFF. A double-press is "next track" on AirPods; left
-        // enabled by default it would either do something surprising here or leak to another
-        // app. Disabled commands also drop their buttons from the Control Center / lock
-        // screen presentation.
+        // Everything else is explicitly OFF. Left enabled by default these would either do
+        // something surprising here or leak to another app — and skipForward in particular
+        // would replace the ⏭ button (our microphone switch) with a "skip 15 seconds" one.
+        // Disabled commands also drop their buttons from the Control Center / lock screen.
         //
         let unwanted: [MPRemoteCommand] = [
             center.skipForwardCommand, center.skipBackwardCommand,
@@ -242,6 +245,19 @@ public final class RemoteTransportControls {
         case .toggle:
             onToggle?()
         }
+    }
+
+    /// When the last next-track press was acted on. Its own gate, separate from play/pause:
+    /// a double-press right after a stem press is two different intentions, not one press
+    /// arriving twice.
+    private var lastNextTrackAt: Date?
+
+    private func handleNextTrack() {
+        record("next track")
+        let now = Date()
+        if let lastNextTrackAt, now.timeIntervalSince(lastNextTrackAt) < 0.5 { return }
+        lastNextTrackAt = now
+        onNextTrack?()
     }
 
     /// Publish the current state again even though it has not changed, defeating the
