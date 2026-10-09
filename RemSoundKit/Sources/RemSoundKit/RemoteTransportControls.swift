@@ -53,6 +53,8 @@ public final class RemoteTransportControls {
     /// sent anything and paused the route itself" — and those need opposite fixes. Every
     /// command we register records itself here, including the ones that change no state.
     public private(set) var lastCommand: (name: String, at: Date)?
+    /// Every routed command's name, as it arrives — for the event log.
+    public var onCommand: ((String) -> Void)?
 
     public init() {}
 
@@ -205,6 +207,7 @@ public final class RemoteTransportControls {
 
     private func record(_ name: String) {
         lastCommand = (name, Date())
+        onCommand?(name)
     }
 
     /// Which way a routed command asks the transport to move.

@@ -8,6 +8,9 @@ import SwiftUI
 /// arrow through when all you wanted was "am I connected". Behind a button they cost nothing
 /// until asked for. The counters run whether or not this is open, so it always shows real
 /// history rather than starting from zero.
+///
+/// Below the measurements: the event log (`EventLog`) — what happened and why, newest first —
+/// and the switch for writing it to files, with a Share button for the current one.
 struct DiagnosticsView: View {
     /// Read-only: @Observable tracks the reads in `body`, so no @Bindable is needed here.
     let controller: ReceiverController
@@ -47,6 +50,9 @@ struct DiagnosticsView: View {
                         }
                     }
                 }
+
+                LogFilesSection(controller: controller)
+                RecentEventsSection(controller: controller)
             }
             .formStyle(.grouped)
             .navigationTitle("Diagnostics")
@@ -58,6 +64,57 @@ struct DiagnosticsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+    }
+}
+
+// Both sections below are their own structs for the reason the pickers in ReceiverRootView
+// are (issue #3): the screen above re-renders every second, and the share sheet and the event
+// list must not be rebuilt underneath the user. Each reads only what it shows.
+
+private struct LogFilesSection: View {
+    let controller: ReceiverController
+
+    var body: some View {
+        Section {
+            Toggle("Write log files", isOn: Binding(
+                get: { controller.fileLoggingEnabled },
+                set: { controller.fileLoggingEnabled = $0 }
+            ))
+            if let file = controller.currentLogFile {
+                ShareLink(item: file) {
+                    Label("Share log", systemImage: "square.and.arrow.up")
+                }
+            }
+        } header: {
+            Text("Log files")
+        }
+    }
+}
+
+private struct RecentEventsSection: View {
+    let controller: ReceiverController
+    private static let shown = 100
+
+    private static let clock: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    var body: some View {
+        Section {
+            if controller.recentEvents.isEmpty {
+                Text("Nothing yet.")
+                    .foregroundStyle(.secondary)
+            }
+            // Newest first: the question is almost always "what just happened?".
+            ForEach(controller.recentEvents.suffix(Self.shown).reversed()) { entry in
+                Text("\(Self.clock.string(from: entry.date))  \(entry.message)")
+                    .font(.callout)
+            }
+        } header: {
+            Text("Recent events")
         }
     }
 }

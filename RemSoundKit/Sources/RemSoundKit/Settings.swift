@@ -171,6 +171,13 @@ public final class ReceiverSettings {
         set { defaults.set(newValue.rawValue, forKey: "acceptPeerConnections") }
     }
 
+    /// Write log files (`EventLog`) as well as keeping recent events in memory. Default off,
+    /// like upstream's "Enable logs". Device-local; not in profiles.
+    public var fileLoggingEnabled: Bool {
+        get { defaults.bool(forKey: "fileLoggingEnabled") }
+        set { defaults.set(newValue, forKey: "fileLoggingEnabled") }
+    }
+
     /// Stable id of the input the user picked for microphone sending (see
     /// `MicrophoneCapture.availableInputs`). Nil/empty = system default input.
     public var selectedMicrophoneId: String? {

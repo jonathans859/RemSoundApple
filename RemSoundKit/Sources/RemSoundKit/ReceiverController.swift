@@ -143,7 +143,32 @@ public final class ReceiverController {
     public private(set) var peers: [PeerListEntry] = []
     public private(set) var statusSummary = "Stopped"
     public private(set) var isRunning = false
-    public private(set) var lastError: String?
+    public private(set) var lastError: String? {
+        didSet {
+            if let lastError, lastError != oldValue { eventLog.event("error: \(lastError)") }
+        }
+    }
+    /// The newest events from `EventLog`, newest last — the Diagnostics screen's list.
+    /// Refreshed in the presentation half of the tick, and only when something was logged.
+    public private(set) var recentEvents: [EventLog.Entry] = []
+    /// The log file being written, for the Share button; nil until one exists.
+    public private(set) var currentLogFile: URL?
+    /// Write log files as well as keeping recent events in memory (upstream's "Enable logs",
+    /// off by default like theirs). Device-local; not in profiles.
+    public var fileLoggingEnabled = false {
+        didSet {
+            guard fileLoggingEnabled != oldValue else { return }
+            settings.fileLoggingEnabled = fileLoggingEnabled
+            // On: open the gate first so the line lands in the file. Off: the reverse.
+            if fileLoggingEnabled {
+                eventLog.setFileLoggingEnabled(true)
+                eventLog.event("log files on")
+            } else {
+                eventLog.event("log files off")
+                eventLog.setFileLoggingEnabled(false)
+            }
+        }
+    }
     /// The at-a-glance connection state — who is connected, their ping, uptime. Kept short
     /// on purpose: this is the list a screen-reader user arrows through every time they open
     /// the app, so the packet-level material lives in `diagnosticDetails` instead.
@@ -234,6 +259,7 @@ public final class ReceiverController {
         didSet {
             guard sendEnabled != oldValue else { return }
             settings.sendEnabled = sendEnabled
+            eventLog.event("send microphone \(sendEnabled ? "on" : "off")")
             if sendEnabled { startSending() } else { stopSending() }
             discovery.setCapabilities(canSend: sendEnabled, canReceive: receiveEnabled)
             // In the didSet, so the cue follows the state wherever it was moved from —
@@ -250,6 +276,7 @@ public final class ReceiverController {
         didSet {
             guard sendCodec != oldValue else { return }
             settings.sendCodec = sendCodec
+            eventLog.event("microphone quality: \(sendCodec.displayName)")
             sendEngine.setCodec(sendCodec)
             refreshNow()
         }
@@ -264,6 +291,7 @@ public final class ReceiverController {
         didSet {
             guard receiveEnabled != oldValue else { return }
             settings.receiveEnabled = receiveEnabled
+            eventLog.event("receive audio \(receiveEnabled ? "on" : "off")")
             engine.setPlaybackEnabled(receiveEnabled)
             discovery.setCapabilities(canSend: sendEnabled, canReceive: receiveEnabled)
             if receiveEnabled && !isRunning { start() }
@@ -280,6 +308,7 @@ public final class ReceiverController {
         didSet {
             guard selectedMicrophoneId != oldValue else { return }
             settings.selectedMicrophoneId = selectedMicrophoneId
+            eventLog.event("microphone: \(selectedMicrophoneId ?? "system default")")
             microphone.setPreferredInput(id: selectedMicrophoneId)
             // Live switch: rebuild the capture graph on the new input.
             if microphone.isRunning {
@@ -303,11 +332,15 @@ public final class ReceiverController {
         didSet {
             mixer.boost = volumeBoost
             settings.volumeBoostDb = volumeBoost.rawValue
+            if volumeBoost != oldValue { eventLog.event("extra volume: \(volumeBoost.displayName)") }
         }
     }
 
     public var isMuted = false {
-        didSet { mixer.isMuted = isMuted }
+        didSet {
+            mixer.isMuted = isMuted
+            if isMuted != oldValue { eventLog.event(isMuted ? "muted" : "unmuted") }
+        }
     }
 
     /// Quick mute for the VoiceOver magic tap (two-finger double tap, iOS). Announces the
@@ -406,6 +439,7 @@ public final class ReceiverController {
             // otherwise drive the first tick.
             autoTuneSamples = []
             lastUserLatencyChange = Date()
+            eventLog.event("adjust delay automatically \(autoTuneLatencyEnabled ? "on" : "off")")
             if !autoTuneLatencyEnabled {
                 // Hand the user's own setting back — the tuned value was never theirs.
                 targetLatencyMs = settings.targetLatencyMs
@@ -419,6 +453,7 @@ public final class ReceiverController {
         didSet {
             cues.enabled = cuesEnabled
             settings.cuesEnabled = cuesEnabled
+            if cuesEnabled != oldValue { eventLog.event("sound effects \(cuesEnabled ? "on" : "off")") }
         }
     }
 
@@ -433,6 +468,7 @@ public final class ReceiverController {
         didSet {
             guard exclusiveAudio != oldValue else { return }
             settings.exclusiveAudio = exclusiveAudio
+            eventLog.event("don't mix with other sounds \(exclusiveAudio ? "on" : "off")")
             output.setExclusiveAudio(exclusiveAudio)
             applyRemoteControls()
         }
@@ -445,6 +481,7 @@ public final class ReceiverController {
         didSet {
             guard headsetTransportControls != oldValue else { return }
             settings.headsetTransportControls = headsetTransportControls
+            eventLog.event("headset controls \(headsetTransportControls ? "on" : "off")")
             applyRemoteControls()
         }
     }
@@ -470,6 +507,7 @@ public final class ReceiverController {
         didSet {
             guard acceptPeerConnections != oldValue else { return }
             settings.acceptPeerConnections = acceptPeerConnections
+            eventLog.event("accept connections: \(acceptPeerConnections.displayName)")
         }
     }
 
@@ -480,6 +518,7 @@ public final class ReceiverController {
         didSet {
             guard startupProfile != oldValue else { return }
             settings.startupProfile = startupProfile
+            eventLog.event("profile at launch changed")
         }
     }
 
@@ -491,6 +530,7 @@ public final class ReceiverController {
         didSet {
             guard iCloudProfileSyncEnabled != oldValue else { return }
             profileStore.setSyncEnabled(iCloudProfileSyncEnabled)
+            eventLog.event("iCloud profile sync \(iCloudProfileSyncEnabled ? "on" : "off")")
             profiles = profileStore.profiles
             announce(iCloudProfileSyncEnabled
                      ? "Profile sync through iCloud on"
@@ -513,6 +553,10 @@ public final class ReceiverController {
     private let heartbeat = HeartbeatService()
     private let cues = CuePlayer()
     private let remoteControls = RemoteTransportControls()
+    /// Everything worth knowing afterwards — see `EventLog`. Built with a default value (not in
+    /// `init`) so the property observers above can always reach it.
+    private let eventLog = EventLog(directory: EventLog.defaultDirectory(),
+                                    deviceName: ProcessInfo.processInfo.hostName)
 #if os(iOS)
     /// Connection requests as lock-screen notifications while the app is not on screen.
     private let requestNotifier = ConnectionRequestNotifier()
@@ -668,7 +712,14 @@ public final class ReceiverController {
         // until the engines are up (end of the first start()); didSet is skipped in init
         // anyway, so assigning sendEnabled here would show "on" without ever sending.
         startupSendPending = settings.sendEnabled
+        // Assigned, so its didSet (which logs and opens files) does not run here.
+        fileLoggingEnabled = settings.fileLoggingEnabled
         output = AudioOutput(mixer: engine.mixer)
+        // Every stored property is set from here on, so methods may be called. The gate is set
+        // directly, before the first line can be written.
+        eventLog.setFileLoggingEnabled(fileLoggingEnabled)
+        eventLog.prune()
+        eventLog.event("\(Self.versionLine) started on \(Self.platformLine)")
 
         mixer.volume = volume
         mixer.boost = volumeBoost
@@ -691,7 +742,11 @@ public final class ReceiverController {
         requestNotifier.onAnswer = { [weak self] id, allow in
             // Only if it is still the question on screen — an old notification for somebody
             // already answered in the app must not answer the next person's request.
-            guard let self, self.pendingConnectionRequest?.id == id else { return }
+            guard let self, self.pendingConnectionRequest?.id == id else {
+                self?.eventLog.event("accept connections: a notification answered a question that was no longer open — ignored")
+                return
+            }
+            self.eventLog.event("accept connections: answered from the notification")
             self.answerConnectionRequest(allow: allow)
         }
 #endif
@@ -700,9 +755,16 @@ public final class ReceiverController {
             self.setReceiveFromTransport(!self.receiveEnabled)
         }
 
-        output.onDiagnostic = { [weak self] message in
+        output.onDiagnostic = { [weak self, eventLog] message in
+            eventLog.event("audio: \(message)")
             Task { @MainActor [weak self] in self?.lastAudioEvent = (message, Date()) }
         }
+        // The services have always said what they were doing; until the event log nobody
+        // listened. EventLog is thread-safe, so these go straight in from their own threads.
+        engine.onDiagnostic = { [eventLog] message in eventLog.event("receive: \(message)") }
+        microphone.onDiagnostic = { [eventLog] message in eventLog.event("microphone: \(message)") }
+        discovery.onDiagnostic = { [eventLog] message in eventLog.event(message) }
+        remoteControls.onCommand = { [eventLog] name in eventLog.event("headset: \(name)") }
         output.onPlaybackRecovered = { [weak self] in
             Task { @MainActor [weak self] in self?.reclaimTransportControls() }
         }
@@ -826,6 +888,7 @@ public final class ReceiverController {
         discovery.start(displayName: Self.deviceName(), audioPort: settings.listenPort)
         discovery.setCapabilities(canSend: sendEnabled, canReceive: receiveEnabled)
         isRunning = true
+        eventLog.event("listening on port \(settings.listenPort)")
         applyRemoteControls()
         applyPeerSelection()
         resolveManualPeers()
@@ -870,6 +933,7 @@ public final class ReceiverController {
         output.stop()
         engine.stop()
         isRunning = false
+        eventLog.event("stopped")
         audiblePeerIds = []
         allowGrace.reset()
         cueTracker.reset() // cleared silently — the stop toggle is its own feedback
@@ -877,6 +941,22 @@ public final class ReceiverController {
         connectionDetails = []
         trafficSummary = ""
         refreshPeerList()
+    }
+
+    /// "RemSound 0.8 (build 123)" — the first thing any log or report needs to say.
+    private static var versionLine: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "RemSound \(short) (build \(build))"
+    }
+
+    private static var platformLine: String {
+#if os(iOS)
+        return "\(UIDevice.current.model), iOS \(UIDevice.current.systemVersion)"
+#else
+        return "Mac, \(ProcessInfo.processInfo.operatingSystemVersionString)"
+#endif
     }
 
     private static func deviceName() -> String {
@@ -932,6 +1012,7 @@ public final class ReceiverController {
         guard !trimmed.isEmpty else { return }
         guard !manualPeers.contains(where: { $0.host == trimmed && $0.port == port }) else { return }
         let peer = ManualPeer(host: trimmed, port: port)
+        eventLog.event("peer added by address: \(trimmed)")
         manualPeers.append(peer)
         settings.manualPeers = manualPeers
         resolveManualPeers()
@@ -940,6 +1021,7 @@ public final class ReceiverController {
 
     public func removeManualPeer(id: UUID) {
         if let peer = manualPeers.first(where: { $0.id == id }) {
+            eventLog.event("peer removed: \(peer.host)")
             for ep in manualResolved[id] ?? [] {
                 selectedAddresses.remove(ep.addressString)
             }
@@ -976,6 +1058,7 @@ public final class ReceiverController {
         settings.serverHost = trimmed
         settings.serverConnected = true
         isConnectedToServer = true
+        eventLog.event("server: connecting to \(trimmed)")
         if changed { serverEndpoint = nil }
         if remember { rememberServer(trimmed) }
         // Said out loud the first time, not just written on the server screen: a screen-reader
@@ -1003,6 +1086,7 @@ public final class ReceiverController {
         applyPeerSelection()
         updateServerStatus()
         refreshNow()
+        eventLog.event("server: left")
         announce("Left the server")
     }
 
@@ -1081,6 +1165,7 @@ public final class ReceiverController {
 
     private func handleServerEvent(_ event: RelayGroupEvent) {
         serverLog.append(event.message)
+        eventLog.event("server: \(event.message)")
         if serverLog.count > Self.serverLogDepth { serverLog.removeFirst() }
         if let spoken = event.announcement { announce(spoken) }
         updateServerStatus()
@@ -1135,6 +1220,8 @@ public final class ReceiverController {
     /// (`PeerAcceptPolicy`): the person may still have us ticked, so their audio keeps
     /// arriving, and without remembering this automatic mode would tick them straight back.
     public func setPeerSelected(_ entry: PeerListEntry, selected: Bool) {
+        eventLog.event("you \(selected ? "ticked" : "unticked") \(entry.name)")
+        acceptLogSaid.removeAll() // the "why not" answers may have just changed
         if selected {
             acceptPolicy.userTicked(acceptKeys(for: entry))
         } else {
@@ -1183,8 +1270,12 @@ public final class ReceiverController {
 
     /// Somebody not ticked here is sending us audio on a network, so they have ticked us.
     private func someoneWantsToConnect(from remote: UDPEndpoint, samePassword: Bool) {
-        guard samePassword else { return }
-        considerAccepting(remote, row: nil)
+        let address = remote.addressString
+        guard samePassword else {
+            logAcceptOnce("password:\(address)", "accept connections: \(address) is sending us audio on a different password (or none) — not offered")
+            return
+        }
+        considerAccepting(remote, row: nil, how: "is sending us audio")
     }
 
     /// A tick proof: somebody has ticked us and says they hold our password. If it opens
@@ -1192,30 +1283,63 @@ public final class ReceiverController {
     /// format packet to prove it. Found as the very device the proof names (its discovery
     /// instance id), never merely by address: two phones can both be called "iPhone".
     private func tickProofArrived(_ payload: ArraySlice<UInt8>, from remote: UDPEndpoint) {
-        guard isRunning, acceptPeerConnections != .manual, let key = currentKey else { return }
-        guard case .accepted(let instanceId) = tickProofGuard.check(key: key, payload: payload,
-                                                                    now: Date())
-        else { return } // another password, stale, or replayed: never offered
-        considerAccepting(remote, row: peers.first { $0.id == "d-\(instanceId)" })
+        guard isRunning else { return }
+        let address = remote.addressString
+        guard acceptPeerConnections != .manual else {
+            logAcceptOnce("manual:\(address)", "accept connections: \(address) has ticked us (tick proof), but Accept connections is set to manual")
+            return
+        }
+        guard let key = currentKey else {
+            logAcceptOnce("nokey:\(address)", "accept connections: \(address) has ticked us, but no password is set here, so nobody can prove they share it — not offered")
+            return
+        }
+        switch tickProofGuard.check(key: key, payload: payload, now: Date()) {
+        case .accepted(let instanceId):
+            considerAccepting(remote, row: peers.first { $0.id == "d-\(instanceId)" },
+                              how: "has ticked us (tick proof)")
+        case .notOurPassword:
+            logAcceptOnce("proof-password:\(address)", "accept connections: a tick proof from \(address) did not open with our password — not offered")
+        case .stale:
+            logAcceptOnce("proof-stale:\(address)", "accept connections: a tick proof from \(address) is stale — the two clocks are more than 10 minutes apart")
+        case .replay:
+            logAcceptOnce("proof-replay:\(address)", "accept connections: a tick proof from \(address) was a replay — ignored")
+        }
+    }
+
+    /// Reasons nothing happened, each said once per person per run: a peer that has ticked
+    /// us sends a proof every five seconds, and the same "why not" every five seconds would
+    /// bury the log. Cleared whenever the user ticks or unticks somebody, which is when the
+    /// answer can change.
+    private var acceptLogSaid: Set<String> = []
+
+    private func logAcceptOnce(_ key: String, _ message: String) {
+        if acceptLogSaid.count > 2000 { acceptLogSaid.removeAll() }
+        guard acceptLogSaid.insert(key).inserted else { return }
+        eventLog.event(message)
     }
 
     /// The one decision both signs of a connection on a network come to: not a server, not
     /// already ticked, not unticked by the user — then the setting decides. `row` is the row
     /// the sign itself names, when it names one; otherwise the row at that address, if any.
-    private func considerAccepting(_ remote: UDPEndpoint, row named: PeerListEntry?) {
+    private func considerAccepting(_ remote: UDPEndpoint, row named: PeerListEntry?, how: String) {
         guard isRunning else { return }
+        let address = remote.addressString
         // A server's own address is not a person, whether or not we are on it now: the people
         // behind it arrive in its member list with names of their own, and its pair partner
         // is asked about from there.
         if knownServerAddresses.contains(remote.address)
-            || serverEndpoint?.address == remote.address { return }
+            || serverEndpoint?.address == remote.address {
+            logAcceptOnce("server:\(address)", "accept connections: \(address) \(how), but it is a server's address, not a person")
+            return
+        }
         if peers.contains(where: { $0.isOnServer && $0.addresses.contains(remote.address) }) { return }
-        let address = remote.addressString
         let row = named ?? peers.first { !$0.isOnServer && $0.addresses.contains(remote.address) }
+        // Already ticked: the normal case for everyone we are connected to — nothing to say.
         if row?.isSelected == true || selectedAddresses.contains(address) { return }
         // Unticked by the user on ANY of its paths: a multi-homed peer must not get back in by
         // proving itself from its other address.
         if let row, acceptKeys(for: row).contains(where: { acceptPolicy.refusedByUser.contains($0) }) {
+            logAcceptOnce("refused:\(row.id)", "accept connections: \(row.name) at \(address) \(how), but you unticked them this run — not offered until you tick them again or restart")
             return
         }
 
@@ -1223,6 +1347,7 @@ public final class ReceiverController {
         let rowId = row?.id
         // Asked about under the row's primary address when there is a row, so the two signs
         // and a peer's two paths are one question, not several.
+        logAcceptOnce("heard:\(address)", "accept connections: \(who) \(how) and is not ticked here")
         offerConnection(key: PeerAcceptPolicy.networkKey(address: row?.addressString ?? address),
                         question: "\(who) would like to connect to you.",
                         name: who) { [weak self] in
@@ -1245,6 +1370,7 @@ public final class ReceiverController {
         // Raw: a proof never goes through a server's group framing.
         for target in tickProofTargets {
             engine.sendRawFromAudioSocket(packet, to: target)
+            logAcceptOnce("sent:\(target.addressString)", "accept connections: telling \(target.addressString) we have ticked them (a tick proof every \(Int(TickProof.sendInterval)) s)")
         }
     }
 
@@ -1294,15 +1420,29 @@ public final class ReceiverController {
     /// list is rebuilt here so the rest of the tick sees the tick.
     private func offerConnection(key: String, question: String, name: String,
                                  accept: @escaping @MainActor () -> Void) {
+        // Read before `decide`, which records the asking.
+        let ignoredBecause: String
+        if acceptPeerConnections == .manual {
+            ignoredBecause = "Accept connections is set to manual"
+        } else if acceptPolicy.refusedByUser.contains(key) {
+            ignoredBecause = "you unticked them this run"
+        } else if acceptPolicy.asked.contains(key) {
+            ignoredBecause = "already asked about them this run"
+        } else {
+            ignoredBecause = "another question is open — asking after it is answered"
+        }
         switch acceptPolicy.decide(key: key, mode: acceptPeerConnections,
                                    promptOpen: pendingConnectionRequest != nil) {
         case .ignore:
+            logAcceptOnce("ignore:\(key):\(ignoredBecause)", "accept connections: \(name) not offered — \(ignoredBecause)")
             return
         case .accept:
+            eventLog.event("accept connections: ticked \(name) back automatically")
             accept()
             refreshPeerList()
             announce("Connected to \(name).")
         case .ask:
+            eventLog.event("accept connections: asking about \(name)" + (uiVisible ? "" : " (as a notification)"))
             pendingAcceptance = { [weak self] in
                 accept()
                 self?.announce("Connected to \(name).")
@@ -1321,6 +1461,7 @@ public final class ReceiverController {
     /// this person again this run — a "no" is remembered the same as a "yes".
     public func answerConnectionRequest(allow: Bool) {
         guard let request = pendingConnectionRequest else { return }
+        eventLog.event("accept connections: you \(allow ? "allowed" : "declined") — \(request.question)")
 #if os(iOS)
         requestNotifier.withdraw(id: request.id)
 #else
@@ -1343,6 +1484,7 @@ public final class ReceiverController {
     public func renamePeer(_ entry: PeerListEntry, to name: String?) {
         guard peerNames.set(name, for: entry.identityKey) else { return }
         settings.peerNames = peerNames.storage
+        eventLog.event("peer renamed: \(entry.fallbackName) → \(peerNames.name(for: entry.identityKey) ?? entry.fallbackName)")
         refreshNow()
         if let resolved = peerNames.name(for: entry.identityKey) {
             announce("Peer renamed to \(resolved)")
@@ -1369,6 +1511,7 @@ public final class ReceiverController {
         profileStore.profiles = profiles
         markApplied(profile.id) // the saved profile IS the current configuration
         cues.play(.profileSaved)
+        eventLog.event("profile saved: \(trimmed)")
         announce("Profile \(trimmed) saved")
     }
 
@@ -1380,6 +1523,7 @@ public final class ReceiverController {
         profileStore.profiles = profiles
         markApplied(id) // now identical to the current configuration
         cues.play(.profileSaved)
+        eventLog.event("profile updated: \(profiles[index].name)")
         announce("Profile \(profiles[index].name) updated")
     }
 
@@ -1404,6 +1548,7 @@ public final class ReceiverController {
         if startupProfile == .fixed(id) { startupProfile = .off }
         if settings.lastAppliedProfileId == id { settings.lastAppliedProfileId = nil }
         if lastAppliedProfileId == id { lastAppliedProfileId = nil }
+        eventLog.event("profile deleted: \(name)")
         announce("Profile \(name) deleted")
     }
 
@@ -1466,6 +1611,7 @@ public final class ReceiverController {
         applyPeerSelection()
         resolveManualPeers()
         refreshNow()
+        eventLog.event("profile applied: \(profile.name)")
         announce("Profile \(profile.name) applied")
     }
 
@@ -1706,6 +1852,7 @@ public final class ReceiverController {
         // for most of its life — which is also exactly when the interesting network events
         // happen — so the window has to be kept regardless of visibility.
         samplePacketDiagnostics()
+        writeLogSnapshot()
 
         // Presentation half — status-string building and @Observable churn the UI diffs.
         // Pure waste while nothing is on screen; setUIVisible(true) forces one immediate full
@@ -1716,6 +1863,45 @@ public final class ReceiverController {
         updateSummary()
         updateConnectionDetails()
         updatePeerDetails()
+        updateRecentEvents()
+    }
+
+    /// Upstream's SNAP row, once a second while log files are on: the counters that explain a
+    /// glitch after the fact. File only — never the on-screen list.
+    private func writeLogSnapshot() {
+        guard fileLoggingEnabled else { return }
+        let totals = mixer.glitchTotals
+        let heartbeats = heartbeat.allPeerHealth().map { health -> String in
+            let state: String
+            switch health.state {
+            case .healthy: state = health.rttMs.map { "\($0) ms" } ?? "ok"
+            case .stale: state = "stale"
+            case .unreachable: state = "unreachable"
+            case .unknown: state = "pending"
+            }
+            return "\(health.audioEndpoint.addressString) \(state)"
+        }.joined(separator: ", ")
+        eventLog.snapshot([
+            Self.deviceName(), String(isRunning), String(receiveEnabled), String(sendEnabled),
+            sendCodec.displayName, String(targetLatencyMs), String(mixer.currentBufferMs),
+            String(engine.bytesReceived / 1024), String(engine.bytesSent / 1024),
+            String(totals.underruns), String(totals.trims),
+            String(peers.filter(\.isSelected).count), String(audiblePeerIds.count), heartbeats,
+        ])
+    }
+
+    private var lastEventCount = -1
+
+    /// Copy the log's recent events into published state — only when something new was
+    /// logged, so an unchanged list does not wake the UI every second.
+    private func updateRecentEvents() {
+        let count = eventLog.eventCount
+        if count != lastEventCount {
+            lastEventCount = count
+            recentEvents = eventLog.recentEntries
+        }
+        let file = eventLog.currentFile
+        if file != currentLogFile { currentLogFile = file }
     }
 
     /// Battery (finding 1): the audio engine renders ~200×/s at the 5 ms low-latency IO
@@ -1982,6 +2168,14 @@ public final class ReceiverController {
         lines.append("Maximum delay: \(targetLatencyMs) ms")
         lines.append("")
         lines.append(contentsOf: connectionDetails)
+        let events = eventLog.recentEntries.suffix(100)
+        if !events.isEmpty {
+            let clock = DateFormatter()
+            clock.dateFormat = "HH:mm:ss"
+            lines.append("")
+            lines.append("Recent events")
+            for entry in events { lines.append("\(clock.string(from: entry.date))  \(entry.message)") }
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -2185,8 +2379,14 @@ public final class ReceiverController {
         if !transitions.lost.isEmpty { cues.play(.disconnect) }
         // "Connected"/"lost", not "receiving audio" — with the heartbeat leg of the rule, a
         // peer can be connected before (or without) sending any audio.
-        for peerName in transitions.connected { announce("Connected to \(peerName)") }
-        for peerName in transitions.lost { announce("Connection to \(peerName) lost") }
+        for peerName in transitions.connected {
+            eventLog.event("peer connected: \(peerName)")
+            announce("Connected to \(peerName)")
+        }
+        for peerName in transitions.lost {
+            eventLog.event("peer lost: \(peerName)")
+            announce("Connection to \(peerName) lost")
+        }
         audiblePeerIds = nowAudible
     }
 

@@ -523,6 +523,20 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   rotation and idle pruning. Its sliding-minute window is sampled in the **functional** half
   of the refresh tick — the peak gap is read-and-reset, so sampling only while the UI is
   visible would fold a whole backgrounded session into one "last minute" figure.
+- **Event log** (`EventLog.swift`, 2026-10-09, port of the Windows `RemSoundLog`; the user
+  asked for "proper diagnostics/logging like the RemSound windows client"): recent events
+  ALWAYS kept in memory (300, shown newest-first under Diagnostics → Recent events, and in
+  the copied report), plus optional log files (`fileLoggingEnabled`, default off, device-local)
+  in Application Support/Logs — upstream's TSV layout: header, `EVT` rows, a `SNAP` counter row
+  per second from the FUNCTIONAL tick (`writeLogSnapshot`), lazy creation, roll at 10 MB,
+  pruned at start to 20 files / 14 days, Share button in Diagnostics. Thread-safe (lock +
+  serial file queue), so the services' `onDiagnostic` hooks (engine, microphone, discovery,
+  audio output) feed it straight from their threads — they existed for years and nobody
+  listened. **Rules:** every user-facing change logs a line in its didSet (upstream's
+  UiChangeLog lesson: ten of sixteen controls logged nothing); every accept-connections
+  decision logs its reason, repeating "why not" lines once per person per run
+  (`logAcceptOnce`, cleared on any tick/untick); never log a password, key or fingerprint.
+  Pinned by `EventLogTests`.
 - Send path: `MicrophoneCapture.swift` (sink node → `CaptureRingBuffer.swift` → drain
   thread, 10 ms units; mono duplicated to both channels) → `AudioSendEngine.swift`
   (accumulate → Opus encode or int24-LE pack → encrypt → split if over one datagram →
