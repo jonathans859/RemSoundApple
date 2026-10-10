@@ -21,17 +21,25 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
 - To check whether the Windows repo changed the protocol since the last review, use the
   `upstream-protocol-sync` skill (`.claude/skills/upstream-protocol-sync/`) — it tracks the
   last-scanned upstream commit and says which files matter.
-- TestFlight: `.github/workflows/testflight.yml` cloud-signs **both platforms** (iOS IPA
-  + macOS PKG, parallel jobs, one shared app record) via the App Store Connect API key
-  (Admin; no certificates or profiles anywhere) and uploads on **every push to `main`**
-  (internal testers, automatic distribution, changelog = commit subject) and on **every
-  published GitHub Release `vX.Y.Z`** (external testers too — repo variable
-  `TESTFLIGHT_EXTERNAL_GROUPS`, default "Beta"; notes = "What to Test"; IPA + PKG
-  attached to the release). To cut a release use the `release` skill (`.claude/skills/release/`) —
-  it drives the Sonnet `release-manager` subagent (`.claude/agents/release-manager.md`).
-  One-time setup steps live in `docs/plan.md`; recurring gotchas (Admin key required for cloud
-  signing, the Xcode/iOS 26 SDK floor that keeps the signing job on `macos-26`) are in
-  the skill's "Known failure modes".
+- TestFlight — two thin callers of the shared `jonathans859/apple-ci` workflows (`@v1`),
+  both platforms (iOS IPA + macOS PKG, parallel jobs, one shared app record):
+  `.github/workflows/testflight.yml` ("TestFlight") **builds** on every push to `main`
+  that touches more than docs/CI/`.claude` (`paths-ignore`) — swift test, then archive,
+  cloud-sign with the Admin App Store Connect API key (plus one shared Apple Development
+  .p12, `APPLE_DEV_CERT_P12`, for the archive step), upload; internal testers get it
+  automatically, changelog = commit subject. `.github/workflows/release.yml` ("Release")
+  **promotes, never rebuilds**: a published GitHub Release `vX.Y.Z` / `vX.Y.Z-bN` checks
+  the tag against the pbxproj `MARKETING_VERSION` (that file is the ONLY version source —
+  a raise needs a version commit), waits for the tagged commit's successful TestFlight
+  run, attaches its IPA + PKG to the release, and hands that same binary to the external
+  group(s) (repo variable `TESTFLIGHT_EXTERNAL_GROUPS`, "External"; notes = "What to
+  Test"). So never tag a commit the build skipped. To cut a release use the `release`
+  skill (`.claude/skills/release/`) — it drives the Sonnet `release-manager` subagent
+  (`.claude/agents/release-manager.md`). One-time setup steps live in `docs/plan.md`;
+  recurring gotchas are in the skill's "Known failure modes". **Any change to either
+  workflow (or to apple-ci's inputs) updates this bullet, `docs/plan.md` and the release
+  skill + agent in the same commit** — the skill drifted once and its watch command
+  silently found nothing.
 
 ## Wire contract — breaking any of these silently breaks Windows interop
 
