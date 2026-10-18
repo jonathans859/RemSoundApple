@@ -433,6 +433,10 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   deliberately stays running: stopping it deactivates the shared iOS audio session, which
   would kill an active mic capture and background survival. Discovery announces the live
   CanSend/CanReceive and re-announces immediately on a toggle change.
+- **iPhone-only** (`TARGETED_DEVICE_FAMILY = 1`, user 2026-10-18, for the 1.0 App Store
+  release; iPads run it in compatibility mode). Adding iPad back means 13" iPad screenshots
+  in App Store Connect, and once a release supports iPad it can never drop it again.
+  `UISupportedInterfaceOrientations~ipad` stays in the Info.plist for that day.
 - iOS 18 / macOS 15 minimum; **one shared bundle id** `com.jonathan859.remsound` for both
   platforms = one App Store Connect app record, universal purchase (iOS renamed from
   `.ios` 2026-07-03; macOS renamed from `.mac` 2026-07-11 — both pre-ship). The macOS
