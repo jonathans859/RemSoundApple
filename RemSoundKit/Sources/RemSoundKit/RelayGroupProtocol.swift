@@ -55,6 +55,11 @@ public enum RelayGroup {
     public static let helloInterval: TimeInterval = 2
     /// The server sends a roster every second; this long without one and the group is cold.
     public static let rosterAliveFor: TimeInterval = 5
+    /// A goodbye goes this many times, this far apart (upstream v6.2 `ByeCopies` /
+    /// `ByeRepeatMs`): one lost on the way kept the next copy of us out for the server's
+    /// five-second rebind silence, and left us listed until its idle timeout.
+    public static let byeCopies = 3
+    public static let byeRepeatInterval: TimeInterval = 0.1
 
     // MARK: - Header
 

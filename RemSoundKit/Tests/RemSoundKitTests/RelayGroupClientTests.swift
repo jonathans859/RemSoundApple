@@ -17,6 +17,11 @@ final class RelayGroupClientTests: XCTestCase {
         var sent: [(packet: [UInt8], to: UDPEndpoint)] = []
         var types: [UInt8] { sent.map { $0.packet[5] } }
         func clear() { sent.removeAll() }
+        /// The goodbye's repeats, held until the test runs them.
+        var byeRepeats: [() -> Void] = []
+        func runByeRepeats() {
+            while !byeRepeats.isEmpty { byeRepeats.removeFirst()() }
+        }
     }
 
     private func makeClient(password: [UInt8]? = nil, connect: Bool = false)
@@ -27,6 +32,7 @@ final class RelayGroupClientTests: XCTestCase {
             wire.sent.append((packet, destination))
             return true
         }
+        client.scheduleByeRepeat = { _, work in wire.byeRepeats.append(work) }
         client.setIdentity(name: "iPhone", passwordFingerprint: password ?? tag)
         if connect { client.connect(to: server) }
         return (client, wire)
@@ -234,6 +240,82 @@ final class RelayGroupClientTests: XCTestCase {
         XCTAssertTrue(client.members.isEmpty)
         XCTAssertFalse(client.isInGroup)
         XCTAssertTrue(wire.sent.contains { $0.packet[5] == 9 && $0.to == server }, "goodbye to the old one")
+    }
+
+    // MARK: - Leaving cleanly (upstream v6.2's hand-over review)
+
+    /// One lost goodbye left us listed until the server's idle timeout: it goes three times.
+    func testGoodbyeGoesThreeTimes() {
+        let (client, wire) = makeClient(connect: true)
+        client.tick()
+        joinGroup(client, wire, members: [(ed, "Ed", true)])
+        client.disconnect()
+        wire.runByeRepeats()
+        let byes = wire.sent.filter { $0.packet[5] == 9 }
+        XCTAssertEqual(byes.count, RelayGroup.byeCopies)
+        XCTAssertTrue(byes.allSatisfy { $0.to == server && $0.packet == byes[0].packet },
+                      "the same goodbye, to the server we left")
+    }
+
+    /// A goodbye still repeating must never land after our own hello: going back to that
+    /// server (or anywhere) stops it.
+    func testComingBackStopsTheRepeatingGoodbye() {
+        let (client, wire) = makeClient(connect: true)
+        client.tick()
+        client.disconnect()
+        client.connect(to: server)
+        wire.clear()
+        wire.runByeRepeats()
+        XCTAssertFalse(wire.sent.contains { $0.packet[5] == 9 }, "no goodbye after the hello")
+    }
+
+    /// Never said hello, so the server never registered us: nothing to say goodbye to.
+    func testNoGoodbyeToAServerWeNeverGreeted() {
+        let (client, wire) = makeClient(password: nil, connect: false)
+        client.rawTransport = nil
+        client.connect(to: server) // no transport: no hello goes out
+        client.rawTransport = { packet, destination in
+            wire.sent.append((packet, destination))
+            return true
+        }
+        client.disconnect()
+        wire.runByeRepeats()
+        XCTAssertTrue(wire.sent.isEmpty)
+    }
+
+    /// Sound in flight the moment after leaving reached the old server as ordinary packets,
+    /// and the server gave them a pair slot: a ghost of us that kept a phone out for a
+    /// minute. Everything addressed to a server we have left is dropped — not sent, not
+    /// handed back to the caller to send.
+    func testNothingGoesToAServerWeHaveLeft() {
+        let (client, wire) = makeClient(connect: true)
+        client.tick()
+        joinGroup(client, wire, members: [(ed, "Ed", true)])
+        client.disconnect()
+        wire.clear()
+        for type in [RemPacketType.audio, .format, .heartbeat, .control] {
+            XCTAssertTrue(client.route(ordinaryPacket(type: type), to: server, send: { packet, to in
+                wire.sent.append((packet, to))
+                return true
+            }), "\(type) to a server we left must be handled (dropped), not sent the ordinary way")
+        }
+        XCTAssertTrue(wire.sent.isEmpty)
+        // Somewhere else entirely is untouched.
+        XCTAssertFalse(client.route(ordinaryPacket(type: .audio), to: elsewhere, send: { _, _ in true }))
+    }
+
+    /// The same after moving to a different server — and connecting back lifts it.
+    func testMovingServersBlocksTheOldOneUntilWeGoBack() {
+        let (client, wire) = makeClient(connect: true)
+        client.tick()
+        client.connect(to: elsewhere)
+        XCTAssertTrue(client.route(ordinaryPacket(type: .audio), to: server, send: { _, _ in true }))
+        client.connect(to: server)
+        wire.clear()
+        XCTAssertFalse(client.route(ordinaryPacket(type: .audio), to: server, send: { _, _ in true }),
+                       "back on it: before the first roster, the ordinary path again")
+        XCTAssertTrue(client.route(ordinaryPacket(type: .audio), to: elsewhere, send: { _, _ in true }),
+                      "and now the one we moved away from is the one left")
     }
 
     // MARK: - The member list

@@ -139,6 +139,11 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   **both** framings (the ordinary one claims the pair slot beside a phone), audio/format/
   control only also go ordinary while the list says we hold that slot *and* the user ticked
   the partner, and address checks are **never** group-framed.
+  **Leaving** (upstream v6.2 hand-over review, ported 2026-10-18): the goodbye goes 3× 100 ms
+  apart (repeats stop on any `connect`), and `route` drops EVERYTHING addressed to a server we
+  have left until we connect to it again — sound in flight after the goodbye otherwise reaches
+  it as ordinary packets, and the server gives that a pair slot: a ghost of us that keeps a
+  real phone out for a minute.
   Members have no address of their own, so each gets a **stand-in endpoint in 240.0.0.0/5**
   (FNV-1a of the client id, Windows parity) and everything this port keys by address works
   per person unchanged. Never show that address to the user; never let a packet addressed to

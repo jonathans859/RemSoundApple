@@ -157,6 +157,20 @@ public final class RelayGroupClient {
     /// the whole group, which every member then pongs. Quadratic traffic for one ping.
     private var lastWrappedHeartbeatSequence: UInt32?
     private var warnedNoPassword = false
+    /// Servers we have left and not connected to again: `route` sends them nothing at all.
+    /// Sound still in flight the moment after we leave used to reach the old server as
+    /// ordinary packets from an address that was no longer a member, and the server gave
+    /// that a pair slot — a ghost of us that kept a real phone out for a minute (upstream
+    /// v6.2's hand-over review). Kept for the run; per-server, so `forgetServerLocked` must
+    /// not clear it.
+    private var leftServers: Set<UDPEndpoint> = []
+    /// Moves on at every `connect`, so a goodbye still repeating stops before it can land
+    /// after a hello.
+    private var byeGeneration = 0
+    /// How the goodbye's repeats are timed. Injectable so the tests can run them by hand.
+    var scheduleByeRepeat: (_ after: TimeInterval, _ work: @escaping () -> Void) -> Void = { delay, work in
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay, execute: work)
+    }
 
     private struct MemberState {
         var name: String
@@ -206,6 +220,9 @@ public final class RelayGroupClient {
             return
         }
         let leaving = byeTargetLocked()
+        if let previous = self.server { leftServers.insert(previous) }
+        leftServers.remove(endpoint)
+        byeGeneration += 1
         forgetServerLocked()
         self.server = endpoint
         lock.unlock()
@@ -219,6 +236,7 @@ public final class RelayGroupClient {
     public func disconnect() {
         lock.lock()
         let leaving = byeTargetLocked()
+        if let previous = self.server { leftServers.insert(previous) }
         forgetServerLocked()
         self.server = nil
         ticked.removeAll()
@@ -512,6 +530,10 @@ public final class RelayGroupClient {
             | UInt32(packet[10]) << 16 | UInt32(packet[11]) << 24
 
         lock.lock()
+        if leftServers.contains(destination) {
+            lock.unlock()
+            return true // a server we have left: nothing more until we connect again
+        }
         let joined = self.inGroup
         let via = self.server
         let forMember = memberIdByAddress[destination.address] != nil
@@ -566,8 +588,31 @@ public final class RelayGroupClient {
         lastHello == .distantPast ? nil : server
     }
 
+    /// Goodbye, sent `RelayGroup.byeCopies` times `RelayGroup.byeRepeatInterval` apart: one
+    /// lost datagram used to leave us listed until the server's idle timeout. A repeat stops
+    /// once we connect anywhere, so a late goodbye never undoes our own hello. The server
+    /// ignores the copies after the first — by then we are not a member, and a goodbye counts
+    /// only from a member's address.
     private func sendBye(to server: UDPEndpoint) {
-        _ = rawTransport?(RelayGroup.byePacket(clientId: clientId), server)
+        let packet = RelayGroup.byePacket(clientId: clientId)
+        _ = rawTransport?(packet, server)
+        lock.lock()
+        let generation = byeGeneration
+        lock.unlock()
+        repeatBye(packet, to: server, generation: generation, remaining: RelayGroup.byeCopies - 1)
+    }
+
+    private func repeatBye(_ packet: [UInt8], to server: UDPEndpoint, generation: Int, remaining: Int) {
+        guard remaining > 0 else { return }
+        scheduleByeRepeat(RelayGroup.byeRepeatInterval) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let stillLeaving = self.byeGeneration == generation && self.server != server
+            self.lock.unlock()
+            guard stillLeaving else { return }
+            _ = self.rawTransport?(packet, server)
+            self.repeatBye(packet, to: server, generation: generation, remaining: remaining - 1)
+        }
     }
 
     /// Everything that exists only because this server said so. Called when the server goes
