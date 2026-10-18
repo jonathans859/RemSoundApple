@@ -599,21 +599,24 @@ public struct ReceiverRootView: View {
             VolumeBoostPicker(controller: controller)
             Toggle("Mute", isOn: $controller.isMuted)
 
-            HStack {
-                Text("Maximum delay")
-                    .accessibilityHidden(true)
+            // Label and value above the slider, not beside it: three things in one row
+            // left the label a word's width at large text sizes, and it broke mid-word.
+            VStack(alignment: .leading) {
+                HStack {
+                    Text("Maximum delay")
+                    Spacer()
+                    Text("\(controller.targetLatencyMs) ms")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                // The slider already says both; reading them twice would just be noise.
+                .accessibilityHidden(true)
                 Slider(value: Binding(
                     get: { Double(controller.targetLatencyMs) },
                     set: { controller.targetLatencyMs = Int($0) }
                 ), in: 5...500, step: 5)
                     .accessibilityLabel("Maximum delay")
                     .accessibilityValue("\(controller.targetLatencyMs) milliseconds")
-                Text("\(controller.targetLatencyMs) ms")
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    // The slider already speaks the value; a second element reading
-                    // "500 ms" with no label would just be noise.
-                    .accessibilityHidden(true)
             }
 
             Toggle("Adjust delay automatically", isOn: $controller.autoTuneLatencyEnabled)
@@ -667,10 +670,45 @@ public struct ReceiverRootView: View {
 
     private var securitySection: some View {
         Section {
-            SecureField("Password", text: $controller.password)
+            PasswordField(controller: controller)
+        } header: {
+            // A filled SecureField shows dots and no label, so without this nothing on
+            // screen says what the box is.
+            Text("Password")
         } footer: {
             Text("Must match the password on your other devices.")
         }
+    }
+}
+
+/// The password box. It edits a draft and hands it to the controller only on Return or
+/// when the box loses focus. Every write derives a new key (100 000 PBKDF2 rounds), and on
+/// a server every password is a different group, so writing each keystroke moved us
+/// through a group per letter and dropped every server tick on the way.
+private struct PasswordField: View {
+    let controller: ReceiverController
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        SecureField("Password", text: $draft)
+            .focused($focused)
+            .submitLabel(.done)
+            .onSubmit(commit)
+            .onChange(of: focused) { _, isFocused in
+                if !isFocused { commit() }
+            }
+            .onAppear { draft = controller.password }
+            // Switching tabs mid-word must not lose what was typed.
+            .onDisappear(perform: commit)
+            // A profile, a Shortcut or the launch profile can change it while this is shown.
+            .onChange(of: controller.password) { _, newValue in
+                if !focused { draft = newValue }
+            }
+    }
+
+    private func commit() {
+        if draft != controller.password { controller.password = draft }
     }
 }
 

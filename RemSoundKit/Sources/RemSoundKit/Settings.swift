@@ -333,6 +333,21 @@ public final class ReceiverSettings {
     }
 }
 
+/// Somewhere a value stays on this one device: not synced, not restored from a backup onto
+/// another device. The Keychain in the app; a dictionary in tests.
+protocol DeviceOnlyStore {
+    func read(_ account: String) -> String?
+    /// False when it could not be stored.
+    func write(_ value: String, _ account: String) -> Bool
+}
+
+struct KeychainDeviceOnlyStore: DeviceOnlyStore {
+    func read(_ account: String) -> String? { Keychain.readDeviceOnly(account: account) }
+    func write(_ value: String, _ account: String) -> Bool {
+        Keychain.writeDeviceOnly(value, account: account)
+    }
+}
+
 /// Minimal Keychain string storage shared by the live settings and the profile store —
 /// one generic-password item per account under the app's single service.
 ///
@@ -354,21 +369,6 @@ public final class ReceiverSettings {
 /// explicit user deletion may call `delete`. Writing an empty value stores an empty item;
 /// it deliberately does NOT remove anything (issue #4: a device whose live password was
 /// blank could wipe a profile's password for every other device just by saving).
-/// Somewhere a value stays on this one device: not synced, not restored from a backup onto
-/// another device. The Keychain in the app; a dictionary in tests.
-protocol DeviceOnlyStore {
-    func read(_ account: String) -> String?
-    /// False when it could not be stored.
-    func write(_ value: String, _ account: String) -> Bool
-}
-
-struct KeychainDeviceOnlyStore: DeviceOnlyStore {
-    func read(_ account: String) -> String? { Keychain.readDeviceOnly(account: account) }
-    func write(_ value: String, _ account: String) -> Bool {
-        Keychain.writeDeviceOnly(value, account: account)
-    }
-}
-
 enum Keychain {
     private static let service = "com.jonathan859.remsound"
 
@@ -451,8 +451,9 @@ enum Keychain {
     }
 
     /// Stores a value — including an empty one, which is a value like any other here.
-    /// Removing an item is `delete`, never a write.
-    static func write(_ value: String, account: String, synchronizable: Bool = false) {
+    /// Removing an item is `delete`, never a write. Returns whether the value is now stored.
+    @discardableResult
+    static func write(_ value: String, account: String, synchronizable: Bool = false) -> Bool {
         let query = baseQuery(account: account, synchronizable: synchronizable)
         let data = Data(value.utf8)
         let status = SecItemUpdate(
@@ -464,8 +465,9 @@ enum Keychain {
             // bring the receiver up once the user unlocks. Compatible with
             // synchronizable items — only the `…ThisDeviceOnly` classes are not.
             addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            SecItemAdd(addQuery as CFDictionary, nil)
+            return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
         }
+        return status == errSecSuccess
     }
 
     /// Remove an account's item in both flavours. The ONLY path that drops a
@@ -489,9 +491,10 @@ enum Keychain {
     static func setSynchronizable(_ on: Bool, account: String) {
         let value = read(account: account)
         guard !value.isEmpty else { return }
-        if on {
-            SecItemDelete(baseQuery(account: account, synchronizable: false) as CFDictionary)
-        }
-        write(value, account: account, synchronizable: on)
+        // Write first, and drop the local copy only once the shared one is really there:
+        // deleting first lost the password outright whenever the write failed (signed out
+        // of iCloud Keychain, a locked keychain, no data-protection keychain access).
+        guard write(value, account: account, synchronizable: on), on else { return }
+        SecItemDelete(baseQuery(account: account, synchronizable: false) as CFDictionary)
     }
 }

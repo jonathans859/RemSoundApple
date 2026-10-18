@@ -418,6 +418,13 @@ public final class AudioReceiverEngine {
             if onUnselectedSenderHeard != nil,
                now.timeIntervalSince(unselectedSenderNoted[remote.address] ?? .distantPast)
                    >= Self.unselectedSenderInterval {
+                // Anyone can put a source address on a format packet, so the memory is
+                // capped: past 256 addresses the ones outside the window are forgotten.
+                if unselectedSenderNoted.count >= 256 {
+                    unselectedSenderNoted = unselectedSenderNoted.filter {
+                        now.timeIntervalSince($0.value) < Self.unselectedSenderInterval
+                    }
+                }
                 unselectedSenderNoted[remote.address] = now
                 if let fingerprint, let mine = audioFingerprint {
                     report = RemSoundCrypto.fingerprintsEqual(fingerprint, mine)

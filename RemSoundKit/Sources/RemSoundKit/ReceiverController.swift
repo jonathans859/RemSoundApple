@@ -494,11 +494,14 @@ public final class ReceiverController {
 
     public var password: String {
         didSet {
+            guard password != oldValue else { return }
             settings.password = password
             applyPassword()
+            // Never the password itself, nor its fingerprint.
+            eventLog.event(password.isEmpty ? "password cleared" : "password changed")
             // A new password is a new group on the server, so the people we had ticked there
             // are people we can no longer see or hear. Their ids go with them.
-            if password != oldValue { clearServerMemberSelections() }
+            clearServerMemberSelections()
         }
     }
 
@@ -1567,8 +1570,10 @@ public final class ReceiverController {
     public func renameProfile(id: UUID, to newName: String) {
         let trimmed = newName.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+        let oldName = profiles[index].name
         profiles[index].name = trimmed
         profileStore.profiles = profiles
+        eventLog.event("profile renamed: \(oldName) to \(trimmed)")
     }
 
     public func deleteProfile(id: UUID) {
@@ -2535,10 +2540,6 @@ public final class ReceiverController {
         }
     }
 
-    /// Diagnostics for the headset / lock-screen transport. Deliberately reports the
-    /// *absence* of a command too: "nothing has been routed to us" and "we were sent
-    /// something and ignored it" look identical from the outside, and they need opposite
-    /// fixes.
     /// What the server has been doing. Worth a panel of its own because a group that will
     /// not form is otherwise completely silent about why: a password that does not match
     /// anybody's, a full server, a member list that never arrives. The trail is what tells
@@ -2556,6 +2557,10 @@ public final class ReceiverController {
         for line in serverLog.suffix(6) { tech.append("Server: \(line)") }
     }
 
+    /// Diagnostics for the headset / lock-screen transport. Deliberately reports the
+    /// *absence* of a command too: "nothing has been routed to us" and "we were sent
+    /// something and ignored it" look identical from the outside, and they need opposite
+    /// fixes.
     private func appendTransportDiagnostics(to tech: inout [String], now: Date) {
         guard headsetTransportControls else {
             tech.append("Headset controls: off")

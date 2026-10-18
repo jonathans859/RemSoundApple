@@ -18,6 +18,7 @@
 		AB1000000000000000000004 /* RemSoundKit in Frameworks */ = {isa = PBXBuildFile; productRef = AC1000000000000000000001 /* RemSoundKit */; };
 		AB1000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AF1000000000000000000003 /* Assets.xcassets */; };
 		AB1000000000000000000006 /* RemSoundIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5000000000000000000001 /* RemSoundIntents.swift */; };
+		AB100000000000000000000C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AF5000000000000000000002 /* PrivacyInfo.xcprivacy */; };
 		AB2000000000000000000001 /* RemSoundMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF2000000000000000000001 /* RemSoundMacApp.swift */; };
 		AB2000000000000000000002 /* connect.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000001 /* connect.wav */; };
 		AB2000000000000000000003 /* disconnect.wav in Resources */ = {isa = PBXBuildFile; fileRef = AF3000000000000000000002 /* disconnect.wav */; };
@@ -29,6 +30,7 @@
 		AB2000000000000000000004 /* RemSoundKit in Frameworks */ = {isa = PBXBuildFile; productRef = AC2000000000000000000001 /* RemSoundKit */; };
 		AB2000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AF2000000000000000000003 /* Assets.xcassets */; };
 		AB2000000000000000000006 /* RemSoundIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5000000000000000000001 /* RemSoundIntents.swift */; };
+		AB200000000000000000000C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AF5000000000000000000002 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,6 +44,7 @@
 		AF2000000000000000000004 /* RemSound.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RemSound.entitlements; sourceTree = "<group>"; };
 		AF3000000000000000000001 /* connect.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = connect.wav; sourceTree = "<group>"; };
 		AF5000000000000000000001 /* RemSoundIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemSoundIntents.swift; sourceTree = "<group>"; };
+		AF5000000000000000000002 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		AF3000000000000000000002 /* disconnect.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = disconnect.wav; sourceTree = "<group>"; };
 		AF3000000000000000000003 /* receive-on.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "receive-on.wav"; sourceTree = "<group>"; };
 		AF3000000000000000000004 /* receive-off.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "receive-off.wav"; sourceTree = "<group>"; };
@@ -104,6 +107,7 @@
 			isa = PBXGroup;
 			children = (
 				AF5000000000000000000001 /* RemSoundIntents.swift */,
+				AF5000000000000000000002 /* PrivacyInfo.xcprivacy */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -232,6 +236,7 @@
 				AB100000000000000000000A /* send-off.wav in Resources */,
 				AB100000000000000000000B /* save.wav in Resources */,
 				AB1000000000000000000005 /* Assets.xcassets in Resources */,
+				AB100000000000000000000C /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -247,6 +252,7 @@
 				AB200000000000000000000A /* send-off.wav in Resources */,
 				AB200000000000000000000B /* save.wav in Resources */,
 				AB2000000000000000000005 /* Assets.xcassets in Resources */,
+				AB200000000000000000000C /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

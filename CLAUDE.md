@@ -18,6 +18,12 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   phase). Prefer the package â€” with ONE exception: App Intents code must live in the app
   targets (`Apps/Shared/RemSoundIntents.swift`, in both Sources phases), because
   SPM-hosted intents silently never appear in Shortcuts on any device.
+- **Privacy manifest** (`Apps/Shared/PrivacyInfo.xcprivacy`, in BOTH Resources phases, added
+  for 1.0): declares the required-reason APIs the code uses — UserDefaults `CA92.1`, system
+  boot time `35F9.1` (`DispatchTime.uptimeNanoseconds`), file timestamps `C617.1` (EventLog's
+  log pruning). New code that touches another category (disk space, `systemUptime`, file
+  dates elsewhere…) must add it there, or the App Store upload is refused (ITMS-91053).
+  No tracking, nothing collected; the App Privacy answer is "Data Not Collected".
 - To check whether the Windows repo changed the protocol since the last review, use the
   `upstream-protocol-sync` skill (`.claude/skills/upstream-protocol-sync/`) â€” it tracks the
   last-scanned upstream commit and says which files matter.
@@ -247,7 +253,8 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   `selectedPeerAddresses`), never an address, which is what makes it outlive their restart and
   ours; the hello's tick list is derived from that same selection, so one untick clears both
   halves and they cannot disagree. A new password is a new group, so the password didSet drops
-  those keys â€” and `applyProfile` sets `applyingProfile` to stop that eating the ticks it has
+  those keys (the password box therefore commits on Return / focus loss, never per
+  keystroke — `PasswordField`) â€” and `applyProfile` sets `applyingProfile` to stop that eating the ticks it has
   just restored. `relayClientId` is device-local: never in a profile, never in iCloud (two
   devices sharing one id would be ONE person to every server), and **never in UserDefaults**:
   it lives in a `â€¦ThisDeviceOnly` Keychain item (data-protection keychain on macOS too,
