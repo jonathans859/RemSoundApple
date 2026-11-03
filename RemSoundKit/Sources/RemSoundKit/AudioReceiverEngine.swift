@@ -20,6 +20,7 @@ public final class AudioReceiverEngine {
     private let decryptor = AudioDecryptor()
     private var socket: UDPSocket?
     private var pruneTimer: DispatchSourceTimer?
+    private var reorderTimer: DispatchSourceTimer?
     private let timerQueue = DispatchQueue(label: "RemSound.ReceiverMaintenance")
 
     /// Mix bus the audio output pulls from.
@@ -271,9 +272,23 @@ public final class AudioReceiverEngine {
         timer.setEventHandler { [weak self] in self?.pruneIdleSessions() }
         timer.resume()
         pruneTimer = timer
+        let reorder = DispatchSource.makeTimerSource(queue: timerQueue)
+        reorder.schedule(deadline: .now() + .milliseconds(20), repeating: .milliseconds(20),
+                         leeway: .milliseconds(2))
+        reorder.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let active = Array(self.sessions.values)
+            self.lock.unlock()
+            for session in active { session.flushPendingOpus() }
+        }
+        reorder.resume()
+        reorderTimer = reorder
     }
 
     public func stop() {
+        reorderTimer?.cancel()
+        reorderTimer = nil
         pruneTimer?.cancel()
         pruneTimer = nil
         socket?.stop()

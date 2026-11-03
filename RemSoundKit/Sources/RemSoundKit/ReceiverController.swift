@@ -2257,6 +2257,9 @@ public final class ReceiverController {
         lines.append("Maximum delay: \(targetLatencyMs) ms")
         lines.append("")
         lines.append(contentsOf: connectionDetails)
+        lines.append("")
+        lines.append("Last minute diagnostics")
+        lines.append(contentsOf: diagnosticDetails)
         let events = recentEventsText(limit: 100)
         if !events.isEmpty {
             lines.append("")
@@ -2418,12 +2421,17 @@ public final class ReceiverController {
 
         if expected > 0 {
             var parts = ["\(received) received"]
-            let lossPercent = Double(lost) * 100 / Double(expected)
-            parts.append(String(format: "%lld lost (%.2f%%)", lost, lossPercent))
+            parts.append("\(lost) initially missing (includes packets that later arrive)")
             if late > 0 { parts.append("\(late) arrived late") }
             if duplicate > 0 { parts.append("\(duplicate) duplicated") }
             lines.append("Packets last minute: " + parts.joined(separator: ", "))
         }
+        lines.append("Sorting last minute: \(stats.reorderedPackets - oldest.stats.reorderedPackets) queued packets emitted in order; "
+                     + "\(stats.reorderDeadlineMisses - oldest.stats.reorderDeadlineMisses) packet slots missed the deadline; "
+                     + "\(stats.staleOrDuplicatePackets - oldest.stats.staleOrDuplicatePackets) stale or duplicate packets ignored")
+        lines.append("Decoder last minute: \(stats.concealedPacketSlots - oldest.stats.concealedPacketSlots) replacement slots, "
+                     + "\(stats.decoderResyncs - oldest.stats.decoderResyncs) resynchronizations, "
+                     + "\(stats.decodeErrors - oldest.stats.decodeErrors) decode errors")
 
         // Inter-arrival gaps are what the jitter buffer has to absorb: a gap longer than the
         // buffered cushion is a dropout no matter how little was lost.

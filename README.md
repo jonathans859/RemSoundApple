@@ -16,8 +16,9 @@ reviewed against RemSound 6.1 and server-v2.16.
 ## Features
 
 **Audio**
-* **Receives both RemSound codecs**: PCM 48 kHz 24-bit and Opus, including Opus
-  forward-error-correction recovery of single lost packets.
+* **Receives both RemSound codecs**: PCM 48 kHz 24-bit and Opus. Opus packets are
+  reordered before decoding; missing packets use concealment or forward error
+  correction when the sender's codec mode supports it.
 * **Sends a microphone or input device** to the peers you have ticked (iPhone: built-in mic,
   AirPods, wired headsets; Mac: any input, including virtual devices like Loopback for
   system audio). Opus at 192 kbps by default, the Windows sender's settings; uncompressed
