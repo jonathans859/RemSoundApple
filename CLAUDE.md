@@ -99,8 +99,11 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   Each part carries its own audio sequence; `frameId` increments per frame. Format fields for
   PCM are 48000 / 2 / 24-bit / encoding 1 / blockAlign 6 / 288000 B/s.
 - **Opus**: decrypt each packet, reorder compressed payloads, then decode with libopus.
-  Hold gaps for 60 ms; a 20 ms timer drains expired gaps without new arrivals. Never
-  decode stale/duplicate packets or rewind. Conceal at most 100 ms per gap; use FEC
+  Hold a gap for half the playout target, 5-60 ms (40 ms at the default 80 ms; a fixed
+  60 ms hold drained that buffer on every real loss); a 20 ms timer drains expired gaps
+  without new arrivals. Never decode stale/duplicate packets or rewind; only a sequence
+  more than the queue (512) behind is a counter restart and resynchronizes. Conceal at
+  most 100 ms per gap, THEN reset the decoder (PLC on a fresh one is silence); use FEC
   only for the preceding missing slot when SILK/hybrid supports it, otherwise PLC.
   Frame-size floor 120 samples. See docs/opus-packet-ordering.txt.
 - **Discovery JSON**: PascalCase keys, matched **case-sensitively** by Windows

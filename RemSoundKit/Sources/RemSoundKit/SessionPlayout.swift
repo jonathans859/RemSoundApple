@@ -101,6 +101,13 @@ final class SessionPlayout {
         return (underruns, trimFireCount, tuneBlockingUnderruns, deviceGulpUnderruns, concealedFrames)
     }
 
+    /// Current target (follows auto-tune). Read by the Opus reorder hold.
+    var targetLatencyMs: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return targetFrames * 1000 / Self.mixSampleRate
+    }
+
     func setTargetLatencyMs(_ ms: Int, drainOnLower: Bool = true) {
         lock.lock()
         defer { lock.unlock() }

@@ -82,6 +82,24 @@ final class OpusPacketReorderTests: XCTestCase {
         XCTAssertEqual(sequences(events), [14])
         XCTAssertTrue(queue.drain(nowNs: 200_000_000).isEmpty)
     }
+
+    func testCounterRestartFarBehindResynchronizesInsteadOfMuting() {
+        var queue = OpusPacketReorderBuffer()
+        _ = queue.insert(sequence: 50_000, bytes: [1], nowNs: 0)
+        // A late packet stays ignored...
+        XCTAssertEqual(queue.insert(sequence: 49_990, bytes: [9], nowNs: 1), [.ignored])
+        // ...but a sender restarting its counter under the same streamId is followed.
+        XCTAssertEqual(queue.insert(sequence: 0, bytes: [2], nowNs: 2),
+                       [.resynchronized, .packet(sequence: 0, bytes: [2], reordered: false)])
+        XCTAssertEqual(sequences(queue.insert(sequence: 1, bytes: [3], nowNs: 3)), [1])
+    }
+
+    func testHoldIsHalfThePlayoutTargetWithinBounds() {
+        XCTAssertEqual(OpusPacketReorderBuffer.holdMilliseconds(targetLatencyMs: 5), 5)
+        XCTAssertEqual(OpusPacketReorderBuffer.holdMilliseconds(targetLatencyMs: 30), 15)
+        XCTAssertEqual(OpusPacketReorderBuffer.holdMilliseconds(targetLatencyMs: 80), 40)
+        XCTAssertEqual(OpusPacketReorderBuffer.holdMilliseconds(targetLatencyMs: 500), 60)
+    }
 }
 
 final class ReorderedOpusPipelineTests: XCTestCase {
@@ -105,11 +123,11 @@ final class ReorderedOpusPipelineTests: XCTestCase {
         }
     }
 
-    private func makeReceiver() -> (StreamSession, SessionPlayout, StreamDiagnostics) {
+    private func makeReceiver(targetLatencyMs: Int = 5) -> (StreamSession, SessionPlayout, StreamDiagnostics) {
         let decryptor = AudioDecryptor()
         decryptor.ensureKey(key)
         let endpoint = UDPEndpoint(host: "127.0.0.1", port: 47830)!
-        let playout = SessionPlayout(endpoint: endpoint, streamId: 1, targetLatencyMs: 5)
+        let playout = SessionPlayout(endpoint: endpoint, streamId: 1, targetLatencyMs: targetLatencyMs)
         let format = AudioFormatInfo(sampleRate: 48_000, channels: 2, bitsPerSample: 16,
             encoding: 1, blockAlign: 4, averageBytesPerSecond: 192_000, codec: .opus,
             frameSamplesPerChannel: 120, lane: .mixed)
@@ -186,5 +204,27 @@ final class ReorderedOpusPipelineTests: XCTestCase {
         XCTAssertEqual(stats.snapshot().concealedPacketSlots, 40)
         XCTAssertEqual(stats.snapshot().decoderResyncs, 1)
         XCTAssertEqual(stats.snapshot().decodeErrors, 0)
+        // The concealment runs on the decoder that heard the real audio, so it continues
+        // the signal; a decoder reset before concealing would only produce silence.
+        var head = [Float](repeating: 0, count: 480)
+        head.withUnsafeMutableBufferPointer { playout.readAdd(into: $0.baseAddress!, frames: 240) }
+        XCTAssertTrue(head[240...].contains { abs($0) > 0.001 }, "First concealed slot must not be silence")
+    }
+
+    /// At the default 80 ms target the hold is 40 ms: a gap must still be waiting at 30 ms
+    /// and released by 41 ms, leaving half the buffer as cushion for a real loss.
+    func testHoldFollowsThePlayoutTarget() throws {
+        let packets = try makePackets()
+        let (session, playout, stats) = makeReceiver(targetLatencyMs: 80)
+        let before = DispatchTime.now().uptimeNanoseconds
+        session.handleAudioPayload(sequence: 100, payload: packets[0][...])
+        session.handleAudioPayload(sequence: 102, payload: packets[2][...])
+        let after = DispatchTime.now().uptimeNanoseconds
+        session.flushPendingOpus(nowNs: before + 30_000_000)
+        XCTAssertEqual(stats.snapshot().reorderDeadlineMisses, 0)
+        XCTAssertEqual(playout.bufferedMs, 2)
+        session.flushPendingOpus(nowNs: after + 41_000_000)
+        XCTAssertEqual(stats.snapshot().reorderDeadlineMisses, 1)
+        XCTAssertEqual(playout.bufferedMs, 7)
     }
 }

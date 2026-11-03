@@ -22,14 +22,21 @@ Correction
 ----------
 StreamSession decrypts each packet and orders compressed payloads before feeding
 the stateful Opus decoder. In-order packets pass through immediately. A gap can
-wait for 60 ms; a maintenance timer checks every 20 ms (plus scheduling leeway),
-including when no subsequent packet arrives. This is a recovery window, not an
-unconditional added delay for every packet.
+wait for half the playout target (Maximum delay, or the auto-tuned value), clamped
+to 5-60 ms: 40 ms at the default 80 ms. A packet that is really lost stalls
+everything behind it for the whole hold, so the hold must leave buffered audio to
+play meanwhile; a fixed 60 ms hold plus timer granularity could empty the default
+buffer on every single loss. A maintenance timer checks every 20 ms (plus
+scheduling leeway), including when no subsequent packet arrives. This is a recovery
+window, not an unconditional added delay for every packet.
 
 Sequence comparison handles UInt32 wraparound. Played/concealed and duplicate
 packets cannot rewind the decoder. The queue is bounded at 512 packets; a larger
-forward jump resets the queue and decoder. Expired gaps get at most 100 ms of
-concealment, with a decoder reset for larger gaps. CELT uses PLC because it carries
+forward jump resets the queue and decoder, and so does a sequence more than 512
+behind (a sender counter restart under the same streamId, which would otherwise be
+ignored until the new counter overtook the old one). Expired gaps get at most
+100 ms of concealment; for larger gaps the decoder is reset after concealing, since
+PLC from a fresh decoder has no history to extend and is only silence. CELT uses PLC because it carries
 no in-band FEC. SILK/hybrid can use the next packet's FEC for only the immediately
 preceding missing slot. Receive and timer work share one decoder lock; the engine
 releases its own lock before flushing sessions.
@@ -59,4 +66,4 @@ Apple account/build settings, manual-start screen, and comparison-only legacy pa
 
 This fixes reorder-induced decoder corruption and extra audio. It cannot recover
 arbitrarily late/lost packets, eliminate WAN latency, or guarantee uninterrupted
-playback through a long network outage. The 60 ms window is fixed in this version.
+playback through a long network outage. The hold follows the playout target (half of it, 5-60 ms).
