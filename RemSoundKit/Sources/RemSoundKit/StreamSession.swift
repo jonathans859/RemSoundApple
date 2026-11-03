@@ -100,6 +100,7 @@ final class StreamSession {
         // encoder actually chose, and therefore whether inband FEC can exist at all.
         if let first = plain.first { diagnostics?.recordOpusTOC(first) }
 
+        updateReorderHold()
         processOrdered(reorderBuffer.insert(sequence: sequence, bytes: plain,
                                            nowNs: DispatchTime.now().uptimeNanoseconds))
     }
@@ -110,7 +111,14 @@ final class StreamSession {
         guard format.codec == .opus else { return }
         decodeLock.lock()
         defer { decodeLock.unlock() }
+        updateReorderHold()
         processOrdered(reorderBuffer.drain(nowNs: nowNs))
+    }
+
+    /// The target moves (user, profile, auto-tune), so the hold is re-derived per call.
+    private func updateReorderHold() {
+        let holdMs = OpusPacketReorderBuffer.holdMilliseconds(targetLatencyMs: playout.targetLatencyMs)
+        reorderBuffer.waitNs = UInt64(holdMs) * 1_000_000
     }
 
     private func processOrdered(_ events: [OpusPacketReorderBuffer.Event]) {
@@ -130,10 +138,6 @@ final class StreamSession {
                 // produce a huge synthetic burst and another buffer trim.
                 let limit = max(1, format.sampleRate / (10 * frameSize))
                 let slots = min(count, limit)
-                if count > limit {
-                    opusDecoder = OpusStreamDecoder(sampleRate: format.sampleRate, channels: format.channels)
-                    diagnostics?.recordReorder(resyncs: 1)
-                }
                 for slot in 0..<slots {
                     let mode = nextPacket.first.map(OpusPacketMode.fromTOC) ?? .unknown
                     let fec = slot == slots - 1 && count <= limit && (mode == .silk || mode == .hybrid)
@@ -143,6 +147,13 @@ final class StreamSession {
                         emitShorts(count: decoded)
                         diagnostics?.recordReorder(concealed: 1)
                     }
+                }
+                // Reset only AFTER concealing: PLC extrapolates from the decoder's history,
+                // and a fresh decoder has none, so concealing first fades the last real
+                // audio out instead of emitting 100 ms of silence.
+                if count > limit {
+                    opusDecoder = OpusStreamDecoder(sampleRate: format.sampleRate, channels: format.channels)
+                    diagnostics?.recordReorder(resyncs: 1)
                 }
             case .ignored:
                 diagnostics?.recordReorder(ignored: 1)
