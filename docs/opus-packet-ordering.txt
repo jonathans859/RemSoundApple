@@ -1,0 +1,62 @@
+Opus receive ordering: diagnosis and correction (2026-11-03)
+==========================================================
+
+Problem
+-------
+Speech from every NVDA voice and music were distorted over a remote Tailscale
+connection, while the same setup previously sounded normal on the local network.
+Lower volume, bypassed speech processing, and a larger iOS maximum delay did not
+resolve it. Diagnostics showed about 400 packets/second, nearly equal initially
+missing and late-arrival counts, and frequent buffer trims. These counters include
+packets that later arrive; they do not demonstrate 25% permanent packet loss.
+The observations do not establish Tailscale as the cause of packet reordering.
+
+The original decoder processes arrival order. With 2.5 ms CELT packets arriving as
+100, 102, 101, 103, it inserts replacement audio for 101 before decoding 102, then
+decodes the late 101 and rewinds its expected sequence. It subsequently inserts
+replacement audio for 102 again. Four packets produce six audio slots (15 ms
+instead of 10 ms). A post-decode jitter buffer cannot repair codec state or restore
+the original order, and must repeatedly trim the extra audio.
+
+Correction
+----------
+StreamSession decrypts each packet and orders compressed payloads before feeding
+the stateful Opus decoder. In-order packets pass through immediately. A gap can
+wait for 60 ms; a maintenance timer checks every 20 ms (plus scheduling leeway),
+including when no subsequent packet arrives. This is a recovery window, not an
+unconditional added delay for every packet.
+
+Sequence comparison handles UInt32 wraparound. Played/concealed and duplicate
+packets cannot rewind the decoder. The queue is bounded at 512 packets; a larger
+forward jump resets the queue and decoder. Expired gaps get at most 100 ms of
+concealment, with a decoder reset for larger gaps. CELT uses PLC because it carries
+no in-band FEC. SILK/hybrid can use the next packet's FEC for only the immediately
+preceding missing slot. Receive and timer work share one decoder lock; the engine
+releases its own lock before flushing sessions.
+
+Diagnostics distinguish initial arrival gaps, queued packets emitted in order,
+deadline misses, ignored stale/duplicate packets, replacement slots, decoder
+resynchronizations, and decode errors. Copy all details includes the minute's
+diagnostics, previously visible only in the UI.
+
+Verification
+------------
+Tests exercise ordering, duplicates, sequence wraparound, terminal-gap draining,
+multiple missing packets, large jumps, and a full minute of synthetic one-in-four
+reordering. Pipeline tests use real AES-GCM and libopus, require non-silent output,
+and compare reordered playback sample-for-sample with in-order playback. They also
+check one-time CELT concealment, discarded late arrivals, and bounded long gaps.
+
+The upstream PR version passes all 276 Swift tests and unsigned Release builds for
+both iOS and macOS using Xcode 27.1 on the existing Mac build host.
+
+A separate iOS TestFlight diagnostic build, based on v1.0.0 with this receive fix
+and an original-decoder comparison switch, passed 273 tests. The affected user
+confirmed normal audio on the previously distorted remote connection after
+installing that build. The Windows sender and remote-access services were unchanged.
+The upstream change keeps ordering always enabled and omits the test app's branding,
+Apple account/build settings, manual-start screen, and comparison-only legacy path.
+
+This fixes reorder-induced decoder corruption and extra audio. It cannot recover
+arbitrarily late/lost packets, eliminate WAN latency, or guarantee uninterrupted
+playback through a long network outage. The 60 ms window is fixed in this version.

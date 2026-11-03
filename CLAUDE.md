@@ -98,8 +98,11 @@ doubt read `src/RemSound.Core/` (`RemPacket.cs`, `RemSoundCrypto.cs`, `PeerDisco
   on the receiver, so upstream's 5 ms default would double what a single lost packet costs.
   Each part carries its own audio sequence; `frameId` increments per frame. Format fields for
   PCM are 48000 / 2 / 24-bit / encoding 1 / blockAlign 6 / 288000 B/s.
-- **Opus**: per-packet decrypt → libopus decode; on a single-packet gap decode the next
-  packet with `decode_fec=1` first. Frame-size floor 120 samples.
+- **Opus**: decrypt each packet, reorder compressed payloads, then decode with libopus.
+  Hold gaps for 60 ms; a 20 ms timer drains expired gaps without new arrivals. Never
+  decode stale/duplicate packets or rewind. Conceal at most 100 ms per gap; use FEC
+  only for the preceding missing slot when SILK/hybrid supports it, otherwise PLC.
+  Frame-size floor 120 samples. See docs/opus-packet-ordering.txt.
 - **Discovery JSON**: PascalCase keys, matched **case-sensitively** by Windows
   (`InstanceId`, `Name`, `AudioPort`, `CanSend`, `CanReceive`). 1.5 s announce, 8 s expiry.
   Unicast is what crosses VPNs; receiving an announcement auto-adds the source IP as a

@@ -1,9 +1,8 @@
 import Foundation
 
-/// Per-sender decode pipeline, mirroring the Windows `StreamSession`: PCM frame assembly +
-/// decrypt + int24→float, or Opus decrypt + decode with single-packet FEC recovery. All work
-/// runs on the network receive thread; the only cross-thread interaction is writing decoded
-/// floats into the `SessionPlayout`.
+/// Per-sender decode pipeline: PCM frame assembly + decrypt + int24→float, or Opus
+/// decrypt + packet ordering + decode. The receive thread and reorder deadline timer
+/// share one lock; decoded floats enter the independently locked SessionPlayout.
 final class StreamSession {
     let endpoint: UDPEndpoint
     let streamId: UInt16
@@ -13,14 +12,15 @@ final class StreamSession {
     private let decryptor: AudioDecryptor
     private let pcmAssembler = PcmFrameAssembler()
     private var opusDecoder: OpusStreamDecoder?
-    private var expectedNextSequence: UInt32?
+    private let decodeLock = NSLock()
+    private var reorderBuffer = OpusPacketReorderBuffer()
 
     /// Packet-level telemetry sink (loss / reorder / arrival gaps / sender Opus mode).
     /// Measurement only — the decode path below behaves identically with or without it.
     private let diagnostics: StreamDiagnostics?
     private var arrivals = ArrivalTracker()
 
-    // Reused scratch buffers — steady-state allocation-free decode path.
+    // Reused sample-conversion scratch buffers.
     private var floatScratch: [Float] = []
     private var stereoScratch: [Float] = []
     private var shortScratch: [Int16] = []
@@ -54,6 +54,8 @@ final class StreamSession {
     /// payloads are dropped silently — a wrong password is surfaced from the format-packet
     /// fingerprint, never as garbage audio.
     func handleAudioPayload(sequence: UInt32, payload: ArraySlice<UInt8>, kernelArrivalNs: UInt64 = 0) {
+        decodeLock.lock()
+        defer { decodeLock.unlock() }
         if let diagnostics {
             arrivals.record(sequence: sequence, kernelArrivalNs: kernelArrivalNs, into: diagnostics)
         }
@@ -89,7 +91,7 @@ final class StreamSession {
     // MARK: - Opus
 
     private func handleOpus(sequence: UInt32, payload: ArraySlice<UInt8>) {
-        guard let opusDecoder else { return }
+        guard opusDecoder != nil else { return }
         guard let plain = decryptor.tryDecrypt(payload) else {
             diagnostics?.recordDecryptFailure()
             return
@@ -98,22 +100,57 @@ final class StreamSession {
         // encoder actually chose, and therefore whether inband FEC can exist at all.
         if let first = plain.first { diagnostics?.recordOpusTOC(first) }
 
-        // Floor at 120 samples = 2.5 ms, libopus's RESTRICTED_LOWDELAY minimum, so a
-        // malformed format packet can't undersize the decode buffer.
+        processOrdered(reorderBuffer.insert(sequence: sequence, bytes: plain,
+                                           nowNs: DispatchTime.now().uptimeNanoseconds))
+    }
+
+    /// Maintenance may run when the final missing packet never arrives. The
+    /// same lock protects decoder state on both the receive and timer threads.
+    func flushPendingOpus(nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+        guard format.codec == .opus else { return }
+        decodeLock.lock()
+        defer { decodeLock.unlock() }
+        processOrdered(reorderBuffer.drain(nowNs: nowNs))
+    }
+
+    private func processOrdered(_ events: [OpusPacketReorderBuffer.Event]) {
         let frameSize = max(120, format.frameSamplesPerChannel)
-
-        // Single-packet gap: this packet carries FEC redundancy for the one we missed.
-        // Decode the FEC frame first (so audio stays in order), then the current frame.
-        let useFec = expectedNextSequence.map { sequence &- $0 == 1 } ?? false // uint wrap intentional
-        if useFec, let fecCount = opusDecoder.decode(plain, frameSize: frameSize, fec: true, into: &shortScratch) {
-            emitShorts(count: fecCount)
+        for event in events {
+            switch event {
+            case let .packet(_, bytes, reordered):
+                if reordered { diagnostics?.recordReorder(recovered: 1) }
+                if let count = opusDecoder?.decode(bytes, frameSize: frameSize, fec: false, into: &shortScratch) {
+                    emitShorts(count: count)
+                } else {
+                    diagnostics?.recordReorder(decodeErrors: 1)
+                }
+            case let .missing(count, nextPacket):
+                diagnostics?.recordReorder(missed: count)
+                // Limit concealment to 100 ms. A prolonged outage must not
+                // produce a huge synthetic burst and another buffer trim.
+                let limit = max(1, format.sampleRate / (10 * frameSize))
+                let slots = min(count, limit)
+                if count > limit {
+                    opusDecoder = OpusStreamDecoder(sampleRate: format.sampleRate, channels: format.channels)
+                    diagnostics?.recordReorder(resyncs: 1)
+                }
+                for slot in 0..<slots {
+                    let mode = nextPacket.first.map(OpusPacketMode.fromTOC) ?? .unknown
+                    let fec = slot == slots - 1 && count <= limit && (mode == .silk || mode == .hybrid)
+                    // Empty input explicitly requests PLC. CELT carries no FEC.
+                    if let decoded = opusDecoder?.decode(fec ? nextPacket : [], frameSize: frameSize,
+                                                         fec: fec, into: &shortScratch) {
+                        emitShorts(count: decoded)
+                        diagnostics?.recordReorder(concealed: 1)
+                    }
+                }
+            case .ignored:
+                diagnostics?.recordReorder(ignored: 1)
+            case .resynchronized:
+                opusDecoder = OpusStreamDecoder(sampleRate: format.sampleRate, channels: format.channels)
+                diagnostics?.recordReorder(resyncs: 1)
+            }
         }
-
-        guard let decoded = opusDecoder.decode(plain, frameSize: frameSize, fec: false, into: &shortScratch) else {
-            return
-        }
-        emitShorts(count: decoded)
-        expectedNextSequence = sequence &+ 1
     }
 
     private func emitShorts(count samplesPerChannel: Int) {

@@ -36,9 +36,15 @@ public enum OpusPacketMode: Sendable {
 
 /// Cumulative packet-level counters, snapshotted for the UI.
 public struct StreamDiagnosticsSnapshot: Sendable {
+    public var reorderedPackets: Int64 = 0
+    public var reorderDeadlineMisses: Int64 = 0
+    public var staleOrDuplicatePackets: Int64 = 0
+    public var concealedPacketSlots: Int64 = 0
+    public var decoderResyncs: Int64 = 0
+    public var decodeErrors: Int64 = 0
     public var audioPacketsReceived: Int64 = 0
-    /// Sum of forward sequence gaps — packets the sender emitted that never arrived
-    /// (or arrived so late they were counted lost first, and then again as `late`).
+    /// Sum of gaps at arrival time, including packets that arrive later. This is
+    /// not permanent loss; reorderDeadlineMisses counts slots skipped by the decoder.
     public var packetsLost: Int64 = 0
     /// Arrived with a sequence older than one already seen: network reordering.
     public var packetsLate: Int64 = 0
@@ -100,6 +106,18 @@ public final class StreamDiagnostics {
         lock.lock()
         stats = StreamDiagnosticsSnapshot()
         peakGapMs = 0
+        lock.unlock()
+    }
+
+    func recordReorder(recovered: Int = 0, missed: Int = 0, ignored: Int = 0,
+                       concealed: Int = 0, resyncs: Int = 0, decodeErrors: Int = 0) {
+        lock.lock()
+        stats.reorderedPackets += Int64(recovered)
+        stats.reorderDeadlineMisses += Int64(missed)
+        stats.staleOrDuplicatePackets += Int64(ignored)
+        stats.concealedPacketSlots += Int64(concealed)
+        stats.decoderResyncs += Int64(resyncs)
+        stats.decodeErrors += Int64(decodeErrors)
         lock.unlock()
     }
 
